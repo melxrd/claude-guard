@@ -48,7 +48,7 @@ Three deliberate choices:
 claude-guard
   guard          : enabled
   bypass         : no
-  data source    : openusage (updated 12s ago)
+  data source    : oauth (updated 12s ago)
   plan           : Max
   5h window      : 91.4% (limit 90%) - resets in 96 min
   weekly         : 58.2% (limit 95%) - resets in 83h
@@ -56,6 +56,9 @@ claude-guard
 
   decision now   : BLOCK 5h window at 91.4% (limit 90%), resets in 96 min. Reserve protected.
 ```
+
+`data source` is whichever of the three answered first. `oauth` is the default
+and needs nothing installed.
 
 ## Commands
 
