@@ -137,7 +137,15 @@ pick_python() {
 
 ge() { awk -v a="$1" -v b="$2" 'BEGIN{exit !(a+0 >= b+0)}'; }
 
-mins_to() { # epoch -> minutes remaining (999999 when unknown)
+secs_to() { # epoch -> seconds remaining (huge when unknown, 0 when past)
+  local e="${1:-0}"
+  [ "$e" -le 0 ] 2>/dev/null && { echo 99999999; return; }
+  local d=$(( e - $(now) ))
+  [ "$d" -lt 0 ] && d=0
+  echo "$d"
+}
+
+mins_to() { # epoch -> minutes remaining, for display only (999999 when unknown)
   local e="${1:-0}"
   [ "$e" -le 0 ] 2>/dev/null && { echo 999999; return; }
   local d=$(( (e - $(now)) / 60 ))
@@ -486,14 +494,14 @@ decide() {
   local m
   if has_pct "$SESSION_PCT" && ge "$SESSION_PCT" "$SESSION_THRESHOLD"; then
     m="$(mins_to "$SESSION_RESET_EPOCH")"
-    if [ "$m" -gt "$SESSION_GRACE_MIN" ]; then
+    if [ "$(secs_to "$SESSION_RESET_EPOCH")" -gt $(( SESSION_GRACE_MIN * 60 )) ]; then
       echo "BLOCK 5h window at ${SESSION_PCT}% (limit ${SESSION_THRESHOLD}%), resets in ${m} min. Reserve protected. Override: claude-guard bypass 60"
       return
     fi
   fi
   if has_pct "$WEEKLY_PCT" && ge "$WEEKLY_PCT" "$WEEKLY_THRESHOLD"; then
     m="$(mins_to "$WEEKLY_RESET_EPOCH")"
-    if [ "$m" -gt "$WEEKLY_GRACE_MIN" ]; then
+    if [ "$(secs_to "$WEEKLY_RESET_EPOCH")" -gt $(( WEEKLY_GRACE_MIN * 60 )) ]; then
       echo "BLOCK Weekly limit at ${WEEKLY_PCT}% (limit ${WEEKLY_THRESHOLD}%), resets in $((m/60))h. Override: claude-guard bypass 60"
       return
     fi
@@ -740,7 +748,7 @@ do_watch() {
   done
   if [ "$hit" -gt 0 ]; then
     local m; m="$(mins_to "$SESSION_RESET_EPOCH")" extra=""
-    if ge "$SESSION_PCT" "$SESSION_THRESHOLD" && [ "$m" -gt "$SESSION_GRACE_MIN" ]; then
+    if ge "$SESSION_PCT" "$SESSION_THRESHOLD" && [ "$(secs_to "$SESSION_RESET_EPOCH")" -gt $(( SESSION_GRACE_MIN * 60 )) ]; then
       extra=" Claude Code is blocked. Cowork is not: close those tasks yourself."
     fi
     alert "Claude usage at ${SESSION_PCT}%" "Resets in ${m} min.${extra}"
@@ -816,6 +824,14 @@ do_selftest() {
   _case "above limit, resets in 25 min"        97   25   ALLOW
   _case "above limit, resets in 31 min"        97   31   BLOCK
   _case "at 100%, resets in 5 min"             100  5    ALLOW
+
+  # the grace boundary is compared in seconds, so it can be asserted exactly
+  SESSION_PCT=97; WEEKLY_PCT=10; FETCHED_EPOCH="$(now)"
+  WEEKLY_RESET_EPOCH=$(( $(now) + 864000 ))
+  SESSION_RESET_EPOCH=$(( $(now) + SESSION_GRACE_MIN * 60 - 30 ))
+  _expect "30s inside the grace window" ALLOW
+  SESSION_RESET_EPOCH=$(( $(now) + SESSION_GRACE_MIN * 60 + 30 ))
+  _expect "30s outside the grace window" BLOCK
 
   SESSION_PCT=97; WEEKLY_PCT=10; FETCHED_EPOCH="$(now)"
   WEEKLY_RESET_EPOCH=$(( $(now) + 864000 ))
