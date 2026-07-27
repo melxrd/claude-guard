@@ -28,7 +28,7 @@
 
 set -uo pipefail
 
-CLAUDE_GUARD_VERSION="1.0.0"
+CLAUDE_GUARD_VERSION="1.0.1"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR="${CLAUDE_GUARD_STATE_DIR:-$HOME/.claude/usage-guard}"
@@ -73,11 +73,16 @@ CLAUDE_BIN=claude
 OPENUSAGE_BASE=http://127.0.0.1:6736
 USE_CCUSAGE=true
 CCUSAGE_BIN=ccusage
+CCUSAGE_TIMEOUT=8
 USE_OAUTH_FALLBACK=true
 OAUTH_MIN_INTERVAL=300
+OAUTH_USAGE_URL=https://api.anthropic.com/api/oauth/usage
 
 # Performance
-CACHE_TTL=60
+# Longer than the watcher interval (90s) on purpose: with a shorter TTL the
+# cache is stale by design and hooks end up refreshing inline, which is the one
+# place a network call is expensive.
+CACHE_TTL=150
 FAIL_BACKOFF=120
 
 for _cf in "$STATE_DIR/guard.conf" "$SCRIPT_DIR/../config/guard.conf" ; do
@@ -136,6 +141,32 @@ pick_python() {
 }
 
 ge() { awk -v a="$1" -v b="$2" 'BEGIN{exit !(a+0 >= b+0)}'; }
+
+# run_limited <seconds> <command...> — portable timeout. GNU `timeout` is not
+# on macOS by default, and this runs on the hot path, so it cannot hang.
+run_limited() {
+  local secs="$1"; shift
+  # Output goes to a file rather than being inherited: a killed process can
+  # leave grandchildren holding the pipe open, and command substitution would
+  # then block until they exit — defeating the timeout entirely.
+  local out rc n=0 max=$(( secs * 10 ))
+  out="$(mktemp "${TMPDIR:-/tmp}/cg-run.XXXXXX")" || return 1
+  "$@" >"$out" 2>/dev/null &
+  local pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$n" -ge "$max" ]; then
+      pkill -9 -P "$pid" 2>/dev/null
+      kill -9 "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      rm -f "$out"
+      return 124
+    fi
+    n=$((n + 1)); sleep 0.1
+  done
+  wait "$pid"; rc=$?
+  cat "$out"; rm -f "$out"
+  return "$rc"
+}
 
 secs_to() { # epoch -> seconds remaining (huge when unknown, 0 when past)
   local e="${1:-0}"
@@ -331,9 +362,10 @@ fetch_openusage() {
 fetch_ccusage() {
   [ "$USE_CCUSAGE" != "true" ] && return 1
   command -v "$CCUSAGE_BIN" >/dev/null 2>&1 || return 1
-  local body
-  body="$("$CCUSAGE_BIN" blocks --active --json 2>/dev/null)" || return 1
-  [ -z "$body" ] && return 1
+  local body rc
+  body="$(run_limited "$CCUSAGE_TIMEOUT" "$CCUSAGE_BIN" blocks --active --json 2>/dev/null)"; rc=$?
+  if [ "$rc" -eq 124 ]; then log "ccusage: timed out after ${CCUSAGE_TIMEOUT}s"; return 1; fi
+  [ "$rc" -ne 0 ] || [ -z "$body" ] && return 1
   printf '%s' "$body"
 }
 
@@ -378,9 +410,14 @@ fetch_oauth() {
   [ -z "$token" ] && return 1
   now >"$OAUTH_STAMP"
   local body code
-  body="$(curl -sS --max-time 6 -w '\n%{http_code}' https://api.anthropic.com/api/oauth/usage \
-            -H "Authorization: Bearer $token" \
-            -H 'anthropic-beta: oauth-2025-04-20' 2>/dev/null)" || return 1
+  # Headers go through a config file on stdin, not argv: arguments are visible
+  # to any local user via `ps`, and one of these carries your token.
+  body="$(curl -sS --max-time 6 -w '\n%{http_code}' -K - 2>/dev/null <<CURLCFG
+url = "$OAUTH_USAGE_URL"
+header = "Authorization: Bearer $token"
+header = "anthropic-beta: oauth-2025-04-20"
+CURLCFG
+)" || return 1
   code="${body##*$'\n'}"; body="${body%$'\n'*}"
   case "$code" in
     200) printf '%s' "$body"; return 0 ;;
@@ -394,9 +431,12 @@ fetch_oauth() {
 _refresh_inner() {
   pick_python || { log "refresh: python3 unavailable"; return 1; }
   local raw src
+  # Order matters: authoritative sources first, the local estimate last.
+  # ccusage only sees this machine's logs, so preferring it would silently
+  # under-report for anyone who also uses Claude Code elsewhere.
   if raw="$(fetch_openusage)" && [ -n "$raw" ]; then       src=openusage
-  elif raw="$(fetch_ccusage)"  && [ -n "$raw" ]; then       src=ccusage
   elif raw="$(fetch_oauth)"    && [ -n "$raw" ]; then       src=oauth
+  elif raw="$(fetch_ccusage)"  && [ -n "$raw" ]; then       src=ccusage
   else
     log "refresh: no usage source available"
     return 1
@@ -638,7 +678,14 @@ do_resume() {
     if [ "$run" -eq 1 ]; then
       echo "resuming: $CWD"
       log "resume: $CWD"
-      ( eval "$cmd" ) >>"$RESUME_LOG" 2>&1 &
+      # Detach: the watcher runs as a systemd oneshot unit, and when it exits
+      # systemd kills its whole cgroup — taking the resumed session with it.
+      if command -v setsid >/dev/null 2>&1; then
+        setsid bash -c "$cmd" >>"$RESUME_LOG" 2>&1 &
+      else
+        ( eval "$cmd" ) >>"$RESUME_LOG" 2>&1 &
+      fi
+      disown 2>/dev/null || true
       rm -f "$f"
     else
       echo "$cmd"

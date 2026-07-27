@@ -73,6 +73,8 @@ agent may do.
 | `OAUTH_MIN_INTERVAL` | `300` | Minimum seconds between those queries |
 | `USE_CCUSAGE` | `true` | Fall back to local token estimates |
 | `CCUSAGE_BIN` | `ccusage` | Path if not on `PATH` |
+| `CCUSAGE_TIMEOUT` | `8` | Seconds before a hanging ccusage is killed |
+| `OAUTH_USAGE_URL` | Anthropic endpoint | Override only behind a proxy |
 
 Raise `OAUTH_MIN_INTERVAL` if the log shows `429`. See
 [data-sources.md](data-sources.md).
@@ -81,8 +83,12 @@ Raise `OAUTH_MIN_INTERVAL` if the log shows `429`. See
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `CACHE_TTL` | `60` | Age at which a hook refreshes the cache inline |
+| `CACHE_TTL` | `150` | Age at which a hook refreshes the cache inline |
 | `FAIL_BACKOFF` | `120` | Quiet period after a failed refresh |
+
+Keep `CACHE_TTL` above the watcher interval (90s). Below it, the cache is stale
+by design and hooks end up refreshing inline — the one place a network call is
+expensive.
 
 `FAIL_BACKOFF` is a safety belt, not a tuning knob: without it every tool call
 pays the connection timeout while a source is down. Measured cost with

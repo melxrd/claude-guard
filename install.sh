@@ -86,6 +86,14 @@ if os.path.exists(path):
         print("ERROR: %s is not valid JSON (%s). Fix it and re-run." % (path, e))
         sys.exit(1)
     shutil.copy2(path, path + '.bak-' + time.strftime('%Y%m%d-%H%M%S'))
+    # keep the five most recent backups, discard the rest
+    import glob
+    old = sorted(glob.glob(path + '.bak-*'))[:-5]
+    for f in old:
+        try:
+            os.remove(f)
+        except OSError:
+            pass
 
 hooks = data.setdefault('hooks', {})
 EVENTS = {'PreToolUse': 'hook-pretool',
@@ -155,6 +163,9 @@ Description=claude-guard usage watcher
 
 [Service]
 Type=oneshot
+# Without this, systemd kills the whole cgroup when watch exits — including any
+# session auto-resume just started in the background.
+KillMode=process
 ExecStart=/bin/bash $DEST/claude-guard watch
 EOF
   cat >"$SYSTEMD_DIR/claude-guard.timer" <<EOF
@@ -208,7 +219,8 @@ echo ""; echo "Installing claude-guard on $OS"; echo ""
 ok "python3: $PY"
 command -v curl >/dev/null 2>&1 || die "curl not found"
 
-if command -v claude >/dev/null 2>&1; then ok "claude: $(command -v claude)"
+CLAUDE_PATH="$(command -v claude 2>/dev/null || true)"
+if [ -n "$CLAUDE_PATH" ]; then ok "claude: $CLAUDE_PATH"
 else warn "the 'claude' command is not on PATH — installing anyway"; fi
 
 # --- usage source check
@@ -272,6 +284,24 @@ else
   if [ "$DRY" = 1 ]; then say "[dry-run] would create $DEST/guard.conf"
   else get_file "config/guard.conf.example" "$DEST/guard.conf"; fi
   ok "config created at $DEST/guard.conf"
+fi
+
+# The watcher runs from launchd/systemd, which do not load your shell profile.
+# Recording the absolute path here is what stops auto-resume failing silently
+# for anyone whose claude lives under nvm, npm or a version manager.
+if [ "$DRY" != 1 ] && [ -n "$CLAUDE_PATH" ]; then
+  if grep -q '^CLAUDE_BIN=' "$DEST/guard.conf" 2>/dev/null; then
+    "$PY" - "$DEST/guard.conf" "$CLAUDE_PATH" <<'PYSET'
+import re, sys
+path, val = sys.argv[1], sys.argv[2]
+s = open(path).read()
+s = re.sub(r'(?m)^CLAUDE_BIN=.*$', 'CLAUDE_BIN=%s' % val, s, count=1)
+open(path, 'w').write(s)
+PYSET
+  else
+    printf '\nCLAUDE_BIN=%s\n' "$CLAUDE_PATH" >>"$DEST/guard.conf"
+  fi
+  ok "CLAUDE_BIN set to $CLAUDE_PATH"
 fi
 
 run "ln -sf '$DEST/claude-guard' '$BIN_DIR/claude-guard'"

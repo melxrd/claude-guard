@@ -16,11 +16,12 @@ export CLAUDE_GUARD_STATE_DIR="$TMP/state"
 mkdir -p "$CLAUDE_GUARD_STATE_DIR"
 
 PASS=0; FAIL=0
-OU_PID=""; NTFY_PID=""
+OU_PID=""; NTFY_PID=""; OAUTH_PID=""
 
 cleanup() {
   [ -n "$OU_PID" ]   && kill "$OU_PID"   2>/dev/null
   [ -n "$NTFY_PID" ] && kill "$NTFY_PID" 2>/dev/null
+  [ -n "$OAUTH_PID" ] && kill "$OAUTH_PID" 2>/dev/null
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -100,6 +101,23 @@ wait_for() { # wait_for <url> <label>
 
 now_ms() { "$PY" -c 'import time;print(int(time.time()*1000))'; }
 
+cat >"$TMP/fake_oauth.py" <<'PY'
+import http.server, json, os, time
+PORT = int(os.environ.get('PORT_OAUTH', '18737'))
+reset = int(time.time()) + 7200
+body = json.dumps({
+    "five_hour": {"utilization": 11.0,
+                  "resets_at": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(reset))},
+    "seven_day": {"utilization": 22.0,
+                  "resets_at": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(reset + 500000))}}).encode()
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(s):
+        s.send_response(200); s.send_header('Content-Type', 'application/json')
+        s.send_header('Content-Length', str(len(body))); s.end_headers(); s.wfile.write(body)
+    def log_message(s, *a): pass
+http.server.HTTPServer(('127.0.0.1', PORT), H).serve_forever()
+PY
+
 start_openusage() { # start_openusage <pct> <reset_min> [weekly_pct]
   [ -n "$OU_PID" ] && { kill "$OU_PID" 2>/dev/null; wait "$OU_PID" 2>/dev/null; OU_PID=""; sleep 0.2; }
   FAKE_PCT="$1" FAKE_RESET_MIN="$2" FAKE_WEEKLY_PCT="${3:-30}" PORT_OU="$PORT_OU" \
@@ -145,6 +163,12 @@ FAIL_BACKOFF=0
 EOF
 
 g() { "$GUARD" "$@"; }
+
+# later assignments win, because guard.conf is sourced top to bottom
+conf() { printf '%s\n' "$@" >>"$CLAUDE_GUARD_STATE_DIR/guard.conf"; }
+source_of() { g refresh >/dev/null 2>&1; sed -n 's/^SOURCE=//p' "$CLAUDE_GUARD_STATE_DIR/usage.env" 2>/dev/null; }
+reset_cache() { rm -f "$CLAUDE_GUARD_STATE_DIR/usage.env" "$CLAUDE_GUARD_STATE_DIR/.oauth-last" \
+                      "$CLAUDE_GUARD_STATE_DIR/.refresh-failed"; }
 
 # ================================================================== tests ====
 section "1. policy selftest"
@@ -260,6 +284,48 @@ else
 fi
 if [ -d "$CLAUDE_GUARD_STATE_DIR/refresh.lock" ]; then lock=present; else lock=absent; fi
 check "no stale lock left behind" "absent" "$lock"
+
+section "12. source priority (authoritative before estimate)"
+PORT_OAUTH=${PORT_OAUTH:-18737}
+PORT_OAUTH="$PORT_OAUTH" "$PY" "$TMP/fake_oauth.py" & OAUTH_PID=$!
+wait_for "http://127.0.0.1:$PORT_OAUTH/usage" "fake OAuth endpoint"
+
+mkdir -p "$TMP/cfg"
+printf '{"claudeAiOauth":{"accessToken":"test-token"}}\n' >"$TMP/cfg/.credentials.json"
+export CLAUDE_CONFIG_DIR="$TMP/cfg"
+
+printf '#!/usr/bin/env bash\necho \x27{"blocks":[{"isActive":true,"totalTokens":50,"tokenLimit":100}]}\x27\n' >"$TMP/fake-ccusage"
+chmod +x "$TMP/fake-ccusage"
+
+[ -n "$OU_PID" ] && { kill "$OU_PID" 2>/dev/null; OU_PID=""; }
+conf \
+  'OPENUSAGE_BASE=""' \
+  'USE_OAUTH_FALLBACK=true' \
+  "OAUTH_USAGE_URL=http://127.0.0.1:$PORT_OAUTH/usage" \
+  'OAUTH_MIN_INTERVAL=0' \
+  'USE_CCUSAGE=true' \
+  "CCUSAGE_BIN=$TMP/fake-ccusage"
+reset_cache
+check "OAuth wins over ccusage" "oauth" "$(source_of)"
+
+conf 'USE_OAUTH_FALLBACK=false'
+reset_cache
+check "ccusage used only as last resort" "ccusage" "$(source_of)"
+
+section "13. a hanging ccusage cannot stall a hook"
+printf '#!/usr/bin/env bash\nsleep 30\n' >"$TMP/slow-ccusage"; chmod +x "$TMP/slow-ccusage"
+conf "CCUSAGE_BIN=$TMP/slow-ccusage" 'CCUSAGE_TIMEOUT=1'
+reset_cache
+t0=$(now_ms)
+g refresh >/dev/null 2>&1
+t1=$(( $(now_ms) - t0 ))
+if [ "$t1" -lt 6000 ]; then
+  printf '  \033[32mok\033[0m   ccusage timeout honoured (%sms)\n' "$t1"; PASS=$((PASS+1))
+else
+  printf '  \033[31mFAIL\033[0m ccusage hung the refresh (%sms)\n' "$t1"; FAIL=$((FAIL+1))
+fi
+kill "$OAUTH_PID" 2>/dev/null
+unset CLAUDE_CONFIG_DIR
 
 # ================================================================ summary ====
 printf '\n\033[1m%s passed, %s failed\033[0m\n\n' "$PASS" "$FAIL"

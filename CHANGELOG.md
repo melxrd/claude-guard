@@ -3,6 +3,36 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] — 2026-07-27
+
+Fixes from an external code audit.
+
+### Fixed
+- **Source order matched the documentation.** The code tried ccusage before the
+  OAuth endpoint, so anyone with ccusage installed silently got a local estimate
+  instead of authoritative data. Now: OpenUsage → OAuth → ccusage, with a
+  regression test.
+- **`ccusage` runs under a timeout** (`CCUSAGE_TIMEOUT`, 8s). It is a node app
+  on the hot path and previously had none.
+- **Auto-resume survives on Linux.** The systemd unit sets `KillMode=process`
+  and resumes are launched with `setsid`; without both, systemd killed the
+  resumed session when the watcher exited.
+- **The installer records an absolute `CLAUDE_BIN`.** launchd and systemd do not
+  load your shell profile, so auto-resume failed silently for anyone using nvm
+  or a version manager.
+- **`CACHE_TTL` raised to 150s**, above the 90s watcher interval. At 60s the
+  cache was stale by design and hooks paid for an inline refresh.
+- **The OAuth token no longer appears in `ps`.** Headers are passed through a
+  curl config file on stdin instead of argv.
+- **`settings.json` backups are pruned** to the five most recent.
+
+### Changed
+- The agent setup guide moved from the README to `docs/agent-setup.md`.
+- README corrected where it overstated: hooks can make one bounded network call
+  when the cache is stale, and "fails open" has one deliberate exception — an
+  unknown reset time with a known over-limit percentage blocks.
+- `OAUTH_USAGE_URL` is configurable, for proxies and for testing.
+
 ## [1.0.0] — 2026-07-27
 
 First public release.

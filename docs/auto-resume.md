@@ -77,7 +77,14 @@ guard is still blocking it refuses and explains why.
 starting at once.
 
 `CLAUDE_BIN` matters because launchd and systemd do not load your shell profile.
-If resumes silently do nothing, check `resume.log`, then set an absolute path.
+The installer records the absolute path it finds at install time; if you later
+switch node version manager or reinstall Claude Code, update it. If resumes
+silently do nothing, check `resume.log` first.
+
+On Linux the watcher runs as a `Type=oneshot` systemd unit, which by default
+kills its whole control group when it exits — taking the resumed session with
+it. The unit therefore sets `KillMode=process`, and resumes are launched with
+`setsid` where available.
 
 ## Verifying without waiting
 

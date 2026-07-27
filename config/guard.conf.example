@@ -68,6 +68,8 @@ AUTO_RESUME_PROMPT="Continue where you left off."
 # Extra flags for the relaunch. A headless run stalls on permission prompts, so
 # if your work needs file edits, set a permission mode here.
 AUTO_RESUME_ARGS=""
+# Absolute path, filled in by the installer. launchd and systemd do not load
+# your shell profile, so a bare "claude" often is not found from the watcher.
 CLAUDE_BIN=claude
 
 # ----------------------------------------------------------- data sources ---
@@ -82,15 +84,20 @@ OPENUSAGE_BASE=http://127.0.0.1:6736
 #    seconds. claude-guard only reads your token, it never rewrites it.
 USE_OAUTH_FALLBACK=true
 OAUTH_MIN_INTERVAL=300
+# Override only if you route through a proxy.
+OAUTH_USAGE_URL=https://api.anthropic.com/api/oauth/usage
 #
 # 3. ccusage — local token estimate from your own logs. Least accurate, since
 #    it cannot see usage from other machines.
 USE_CCUSAGE=true
 CCUSAGE_BIN=ccusage
+CCUSAGE_TIMEOUT=8
 
 # ------------------------------------------------------------ performance ---
-# How old the cache may get before a hook refreshes it inline.
-CACHE_TTL=60
+# How old the cache may get before a hook refreshes it inline. Keep this above
+# the watcher interval (90s), otherwise the cache is stale by design and hooks
+# pay for a network call on the hot path.
+CACHE_TTL=150
 # After a failed refresh, don't retry for this long. Without it, a dead source
 # would make every single tool call pay the curl timeout.
 FAIL_BACKOFF=120

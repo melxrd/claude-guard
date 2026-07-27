@@ -3,6 +3,10 @@
 claude-guard needs two numbers: how much of the window you have used, and when
 it resets. Three sources are tried in order; the first that answers wins.
 
+The order is deliberate: **authoritative sources first, the local estimate
+last.** ccusage only sees this machine's logs, so preferring it would silently
+under-report for anyone who also uses Claude Code elsewhere.
+
 ## 1. OpenUsage (optional, preferred)
 
 [OpenUsage](https://github.com/robinebers/openusage) is a menu-bar usage tracker
@@ -43,6 +47,11 @@ On macOS the first read may raise a keychain prompt.
 **The endpoint is undocumented** and can change without notice. When it does,
 claude-guard fails open and logs why.
 
+The token is passed to curl through a config file on stdin, not on the command
+line — arguments are visible to any local user via `ps`.
+
+`OAUTH_USAGE_URL` overrides the endpoint; only useful behind a proxy.
+
 **It rate-limits hard.** Hence `OAUTH_MIN_INTERVAL=300` — one call every five
 minutes at most, whatever the watcher interval. Raise it if you see `429` in the
 log.
@@ -78,7 +87,8 @@ ccusage blocks --active --json
 the web, Cowork — ccusage cannot see it and will under-report. Treat it as a
 floor, not a measurement.
 
-`USE_CCUSAGE=false` skips it.
+ccusage is a node app on the hot path, so it runs under a `CCUSAGE_TIMEOUT`
+(8s) watchdog. `USE_CCUSAGE=false` skips it entirely.
 
 ## When nothing answers
 
@@ -104,7 +114,8 @@ PLAN="Max"
 ```
 
 The watcher refreshes it every 90 seconds; a hook refreshes inline if it is
-older than `CACHE_TTL` (60s), behind a lock and the failure backoff. Older than
+older than `CACHE_TTL` (150s — longer than the 90s watcher interval on purpose,
+so this rarely happens), behind a lock and the failure backoff. Older than
 `STALE_MAX_SEC` (900s) counts as missing and triggers `FAIL_MODE`.
 
 The raw response is kept in `usage-raw.json` — attach that when reporting a
