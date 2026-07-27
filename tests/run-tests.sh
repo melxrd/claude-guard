@@ -167,7 +167,8 @@ contains "reason is explained"      '5h window at 94.0%'          "$out"
 
 out="$(echo '{"session_id":"s1","prompt":"hi"}' | g hook-prompt)"
 contains "UserPromptSubmit halts"   '"continue":false'            "$out"
-check    "prompt was saved"          0 "$([ -s "$CLAUDE_GUARD_STATE_DIR/blocked-prompts.log" ]; echo $?)"
+if [ -s "$CLAUDE_GUARD_STATE_DIR/blocked-prompts.log" ]; then saved=yes; else saved=no; fi
+check    "prompt was saved"         "yes" "$saved"
 
 section "5. grace window"
 start_openusage 94 20
@@ -239,7 +240,8 @@ if [ "$elapsed" -lt 4000 ]; then
 else
   printf '  \033[31mFAIL\033[0m hook too slow without a source (%sms)\n' "$elapsed"; FAIL=$((FAIL+1))
 fi
-check "no stale lock left behind" 1 "$([ -d "$CLAUDE_GUARD_STATE_DIR/refresh.lock" ]; echo $?)"
+if [ -d "$CLAUDE_GUARD_STATE_DIR/refresh.lock" ]; then lock=present; else lock=absent; fi
+check "no stale lock left behind" "absent" "$lock"
 
 # ================================================================ summary ====
 printf '\n\033[1m%s passed, %s failed\033[0m\n\n' "$PASS" "$FAIL"
