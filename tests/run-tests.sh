@@ -72,6 +72,8 @@ import http.server, os
 LOG = os.environ['NTFY_LOG']
 PORT = int(os.environ.get('PORT_NTFY', '18899'))
 class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(s):          # readiness probe
+        s.send_response(200); s.send_header('Content-Length', '2'); s.end_headers(); s.wfile.write(b'ok')
     def do_POST(s):
         n = int(s.headers.get('Content-Length', 0))
         body = s.rfile.read(n).decode()
@@ -83,16 +85,32 @@ class H(http.server.BaseHTTPRequestHandler):
 http.server.HTTPServer(('127.0.0.1', PORT), H).serve_forever()
 PY
 
+# Wait until a server actually answers. A fixed sleep is not enough on cold
+# CI runners, where a python interpreter can take over a second to start.
+wait_for() { # wait_for <url> <label>
+  local n=0
+  while [ "$n" -lt 150 ]; do
+    curl -fsS --max-time 1 "$1" >/dev/null 2>&1 && return 0
+    n=$((n + 1))
+    sleep 0.1
+  done
+  printf '  \033[31mFATAL\033[0m %s never came up at %s\n' "$2" "$1" >&2
+  exit 1
+}
+
+now_ms() { "$PY" -c 'import time;print(int(time.time()*1000))'; }
+
 start_openusage() { # start_openusage <pct> <reset_min> [weekly_pct]
   [ -n "$OU_PID" ] && { kill "$OU_PID" 2>/dev/null; wait "$OU_PID" 2>/dev/null; OU_PID=""; sleep 0.2; }
   FAKE_PCT="$1" FAKE_RESET_MIN="$2" FAKE_WEEKLY_PCT="${3:-30}" PORT_OU="$PORT_OU" \
     "$PY" "$TMP/fake_openusage.py" & OU_PID=$!
-  sleep 0.7
+  wait_for "http://127.0.0.1:$PORT_OU/v1/usage" "fake OpenUsage"
 }
 
 NTFY_LOG="$TMP/ntfy.log"
 NTFY_LOG="$NTFY_LOG" PORT_NTFY="$PORT_NTFY" "$PY" "$TMP/fake_ntfy.py" & NTFY_PID=$!
-sleep 0.7
+wait_for "http://127.0.0.1:$PORT_NTFY/ready" "fake ntfy"
+: >"$NTFY_LOG"
 
 # fake `claude` binary: records that a resume happened
 cat >"$TMP/fake-claude" <<EOF
@@ -231,9 +249,9 @@ section "11. degrading gracefully"
 [ -n "$OU_PID" ] && { kill "$OU_PID" 2>/dev/null; OU_PID=""; }
 sleep 0.3
 rm -f "$CLAUDE_GUARD_STATE_DIR/usage.env" "$CLAUDE_GUARD_STATE_DIR/.refresh-failed"
-start=$(date +%s%N)
+start=$(now_ms)
 out="$(echo '{"session_id":"s8"}' | g hook-pretool)"
-elapsed=$(( ( $(date +%s%N) - start ) / 1000000 ))
+elapsed=$(( $(now_ms) - start ))
 check "no data means no block" "" "$out"
 if [ "$elapsed" -lt 4000 ]; then
   printf '  \033[32mok\033[0m   hook stays fast without a source (%sms)\n' "$elapsed"; PASS=$((PASS+1))
