@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Install shellcheck (macOS)
+        if: runner.os == 'macOS'
+        run: brew install shellcheck
+
+      - name: Lint
+        run: shellcheck -S warning bin/claude-guard install.sh tests/run-tests.sh
+
+      - name: Test
+        run: ./tests/run-tests.sh
+
+      - name: Installer dry-run
+        run: ./install.sh --dry-run

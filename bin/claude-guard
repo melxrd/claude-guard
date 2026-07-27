@@ -1,0 +1,876 @@
+#!/usr/bin/env bash
+#
+# claude-guard — a usage kill switch for Claude Code.
+#
+# Stops Claude Code when your rolling usage window crosses a threshold, so you
+# keep a reserve for when you actually need it. Lifts the block automatically
+# when the window is about to reset, and can resume the interrupted work.
+#
+# Commands:
+#   status              show usage, thresholds and the current decision
+#   refresh             force a usage cache refresh
+#   watch               one watcher tick (alerts + reset detection); run by the timer
+#   pending             list sessions that were blocked and can be resumed
+#   resume [--run]      show (or execute) the resume commands for pending sessions
+#   bypass [minutes]    disable blocking for N minutes (default 60)
+#   unbypass            re-enable blocking now
+#   selftest            run the policy test suite with synthetic data
+#   notify-test         send a test desktop notification
+#   ntfy-test           send a test push via ntfy
+#   hook-pretool        PreToolUse hook       (reads JSON on stdin)
+#   hook-prompt         UserPromptSubmit hook (reads JSON on stdin)
+#   hook-stop           Stop hook             (reads JSON on stdin)
+#
+# The hooks never make a synchronous network call on the hot path: they read a
+# small shell-format cache that the watcher refreshes in the background.
+#
+# https://github.com/melxrd/claude-guard — MIT licensed.
+
+set -uo pipefail
+
+CLAUDE_GUARD_VERSION="1.0.0"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STATE_DIR="${CLAUDE_GUARD_STATE_DIR:-$HOME/.claude/usage-guard}"
+
+# ============================================================== defaults =====
+# Every value below can be overridden in guard.conf.
+
+GUARD_ENABLED=true
+
+# Blocking policy
+SESSION_THRESHOLD=90        # % of the 5-hour window above which we block
+SESSION_GRACE_MIN=30        # ...unless the window resets within this many minutes
+WEEKLY_THRESHOLD=95
+WEEKLY_GRACE_MIN=120
+
+# Safety
+FAIL_MODE=open              # open | closed — what to do when usage data is missing
+STALE_MAX_SEC=900           # cache older than this counts as missing
+
+# Desktop notifications
+NOTIFY_ON_STOP=true
+NOTIFY_MIN_TURN_SEC=60      # don't notify for turns shorter than this
+NOTIFY_SOUND=Glass          # macOS sound name; "" for silent
+NOTIFY_DEDUPE_SEC=300
+ALERT_LEVELS="75 90 95"     # warn once per window at each of these percentages
+
+# Phone push via ntfy (optional; empty topic disables it)
+NTFY_SERVER=https://ntfy.sh
+NTFY_TOPIC=""
+NTFY_PRIORITY=default
+
+# Resume after the window resets
+RESUME_NOTIFY=true          # tell me when the window resets and work is pending
+AUTO_RESUME=true            # relaunch Claude Code automatically on reset (see docs/auto-resume.md)
+AUTO_RESUME_MAX=3           # never relaunch more than this many sessions at once
+AUTO_RESUME_MAX_AGE_H=12    # ignore blocked sessions older than this
+AUTO_RESUME_PROMPT="Continue where you left off."
+AUTO_RESUME_ARGS=""         # e.g. "--permission-mode acceptEdits"
+CLAUDE_BIN=claude
+
+# Data sources
+OPENUSAGE_BASE=http://127.0.0.1:6736
+USE_CCUSAGE=true
+CCUSAGE_BIN=ccusage
+USE_OAUTH_FALLBACK=true
+OAUTH_MIN_INTERVAL=300
+
+# Performance
+CACHE_TTL=60
+FAIL_BACKOFF=120
+
+for _cf in "$STATE_DIR/guard.conf" "$SCRIPT_DIR/../config/guard.conf" ; do
+  # shellcheck disable=SC1090
+  [ -r "$_cf" ] && { . "$_cf"; break; }
+done
+
+# ================================================================= paths =====
+CACHE_ENV="$STATE_DIR/usage.env"
+CACHE_RAW="$STATE_DIR/usage-raw.json"
+BYPASS_FILE="$STATE_DIR/BYPASS"
+ALERT_STATE="$STATE_DIR/alert-state"
+LOCK_FILE="$STATE_DIR/refresh.lock"
+LOG_FILE="$STATE_DIR/guard.log"
+TURN_DIR="$STATE_DIR/turns"
+PENDING_DIR="$STATE_DIR/pending"
+RESUME_LOG="$STATE_DIR/resume.log"
+OAUTH_STAMP="$STATE_DIR/.oauth-last"
+FAIL_STAMP="$STATE_DIR/.refresh-failed"
+NOTIFY_STAMP="$STATE_DIR/.last-notify"
+BLOCKED_PROMPTS="$STATE_DIR/blocked-prompts.log"
+
+mkdir -p "$STATE_DIR" "$TURN_DIR" "$PENDING_DIR" 2>/dev/null
+
+# =============================================================== helpers =====
+now() { date +%s; }
+
+case "$(uname -s)" in
+  Darwin) OS=macos ;;
+  Linux)  OS=linux ;;
+  *)      OS=other ;;
+esac
+
+file_mtime() {
+  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || now
+}
+
+fmt_clock() { # epoch -> HH:MM
+  date -r "$1" '+%H:%M' 2>/dev/null || date -d "@$1" '+%H:%M' 2>/dev/null || echo "?"
+}
+
+log() {
+  printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG_FILE" 2>/dev/null
+  if [ -f "$LOG_FILE" ] && [ "$(wc -l <"$LOG_FILE" 2>/dev/null || echo 0)" -gt 4000 ]; then
+    tail -n 2000 "$LOG_FILE" >"$LOG_FILE.tmp" 2>/dev/null && mv "$LOG_FILE.tmp" "$LOG_FILE"
+  fi
+}
+
+PY=""
+pick_python() {
+  [ -n "$PY" ] && return 0
+  for c in /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
+    if command -v "$c" >/dev/null 2>&1 && "$c" -c 'pass' >/dev/null 2>&1; then PY="$c"; return 0; fi
+  done
+  return 1
+}
+
+ge() { awk -v a="$1" -v b="$2" 'BEGIN{exit !(a+0 >= b+0)}'; }
+
+mins_to() { # epoch -> minutes remaining (999999 when unknown)
+  local e="${1:-0}"
+  [ "$e" -le 0 ] 2>/dev/null && { echo 999999; return; }
+  local d=$(( (e - $(now)) / 60 ))
+  [ "$d" -lt 0 ] && d=0
+  echo "$d"
+}
+
+has_pct() { [ "${1%.*}" -ge 0 ] 2>/dev/null; }
+
+# ========================================================== usage sources ====
+# Normalised cache format (usage.env), sourced directly by the hooks:
+#   FETCHED_EPOCH SESSION_PCT SESSION_RESET_EPOCH WEEKLY_PCT WEEKLY_RESET_EPOCH
+#   SOURCE PLAN            (-1 means "unknown")
+
+normalize_py() {
+  cat <<'PYEOF'
+import json, sys, time, calendar, re
+
+raw = sys.stdin.read()
+try:
+    data = json.loads(raw)
+except Exception:
+    sys.exit(3)
+
+source = sys.argv[1] if len(sys.argv) > 1 else 'unknown'
+
+
+def iso2epoch(s):
+    if not s:
+        return 0
+    s = str(s).strip()
+    m = re.match(r'^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})', s)
+    if not m:
+        return 0
+    base = calendar.timegm(tuple(int(x) for x in m.groups()) + (0, 0, 0))
+    tzm = re.search(r'([+-])(\d{2}):?(\d{2})$', s[m.end():])
+    if tzm:
+        off = int(tzm.group(2)) * 3600 + int(tzm.group(3)) * 60
+        base -= off if tzm.group(1) == '+' else -off
+    return base
+
+
+def snapshots(d):
+    if isinstance(d, list):
+        return d
+    if isinstance(d, dict):
+        if 'lines' in d:
+            return [d]
+        for k in ('providers', 'snapshots', 'data', 'usage', 'items'):
+            v = d.get(k)
+            if isinstance(v, list):
+                return v
+            if isinstance(v, dict):
+                return list(v.values())
+    return []
+
+
+def pick_claude(snaps):
+    best = None
+    for s in snaps:
+        if not isinstance(s, dict):
+            continue
+        ident = ('%s %s' % (s.get('providerId', ''), s.get('displayName', ''))).lower()
+        if 'claude' not in ident or 'codex' in ident or 'gemini' in ident:
+            continue
+        if best is None or len(s.get('lines') or []) > len(best.get('lines') or []):
+            best = s
+    return best
+
+
+FIVE_H = 5 * 3600 * 1000
+WEEK_DAYS = (3, 7)   # both 72h and 7d windows have been observed
+
+
+def classify(line):
+    label = str(line.get('label') or '').lower()
+    try:
+        dur = int(line.get('periodDurationMs'))
+    except Exception:
+        dur = None
+    if dur is not None:
+        if abs(dur - FIVE_H) < 3600 * 1000:
+            return 'session'
+        for d in WEEK_DAYS:
+            if abs(dur - d * 86400 * 1000) < 12 * 3600 * 1000:
+                return 'weekly'
+    if any(w in label for w in ('session', 'sessione', '5h', '5 h', 'five')):
+        return 'session'
+    if any(w in label for w in ('week', 'settiman', '7d', '7 d', 'weekly')):
+        return 'weekly'
+    return None
+
+
+def pct_of(line):
+    try:
+        used = float(line.get('used'))
+    except Exception:
+        return None
+    try:
+        lim = float(line.get('limit'))
+    except Exception:
+        lim = None
+    if lim and lim > 0:
+        return round(used / lim * 100.0, 1)
+    if ((line.get('format') or {}).get('kind') or '').lower() == 'percent':
+        return round(used, 1)
+    return None
+
+
+out = {'SESSION_PCT': '', 'SESSION_RESET_EPOCH': '0',
+       'WEEKLY_PCT': '', 'WEEKLY_RESET_EPOCH': '0', 'PLAN': ''}
+
+if source == 'oauth':
+    fh = data.get('five_hour') or {}
+    sd = data.get('seven_day') or {}
+    if fh.get('utilization') is not None:
+        out['SESSION_PCT'] = str(round(float(fh['utilization']), 1))
+        out['SESSION_RESET_EPOCH'] = str(iso2epoch(fh.get('resets_at')))
+    if sd.get('utilization') is not None:
+        out['WEEKLY_PCT'] = str(round(float(sd['utilization']), 1))
+        out['WEEKLY_RESET_EPOCH'] = str(iso2epoch(sd.get('resets_at')))
+
+elif source == 'ccusage':
+    # `ccusage blocks --active --json` — token counts, not server-side truth.
+    blocks = data.get('blocks') or data.get('data') or []
+    if isinstance(blocks, dict):
+        blocks = [blocks]
+    for b in blocks:
+        if not isinstance(b, dict):
+            continue
+        if b.get('isActive') is False:
+            continue
+        used = b.get('totalTokens') or (b.get('tokenCounts') or {}).get('total')
+        lim = b.get('tokenLimit') or b.get('limit')
+        try:
+            if used is not None and lim:
+                out['SESSION_PCT'] = str(round(float(used) / float(lim) * 100.0, 1))
+        except Exception:
+            pass
+        end = b.get('endTime') or b.get('resetTime') or b.get('endsAt')
+        if end:
+            out['SESSION_RESET_EPOCH'] = str(iso2epoch(end))
+        break
+
+else:
+    snap = pick_claude(snapshots(data))
+    if snap is None:
+        sys.exit(4)
+    out['PLAN'] = str(snap.get('plan') or '').replace('"', '')
+    for line in (snap.get('lines') or []):
+        if not isinstance(line, dict):
+            continue
+        kind = classify(line)
+        p = pct_of(line) if kind else None
+        if kind is None or p is None:
+            continue
+        if kind == 'session' and out['SESSION_PCT'] == '':
+            out['SESSION_PCT'] = str(p)
+            out['SESSION_RESET_EPOCH'] = str(iso2epoch(line.get('resetsAt')))
+        elif kind == 'weekly' and out['WEEKLY_PCT'] == '':
+            out['WEEKLY_PCT'] = str(p)
+            out['WEEKLY_RESET_EPOCH'] = str(iso2epoch(line.get('resetsAt')))
+
+if out['SESSION_PCT'] == '' and out['WEEKLY_PCT'] == '':
+    sys.exit(5)
+
+print('FETCHED_EPOCH=%d' % int(time.time()))
+for k in ('SESSION_PCT', 'SESSION_RESET_EPOCH', 'WEEKLY_PCT', 'WEEKLY_RESET_EPOCH'):
+    print('%s=%s' % (k, out[k] if out[k] != '' else '-1'))
+print('SOURCE=%s' % source)
+print('PLAN="%s"' % out['PLAN'])
+PYEOF
+}
+
+fetch_openusage() {
+  [ -z "${OPENUSAGE_BASE:-}" ] && return 1
+  local body
+  body="$(curl -fsS --max-time 3 "$OPENUSAGE_BASE/v1/usage" 2>/dev/null)" || return 1
+  [ -z "$body" ] && return 1
+  printf '%s' "$body"
+}
+
+fetch_ccusage() {
+  [ "$USE_CCUSAGE" != "true" ] && return 1
+  command -v "$CCUSAGE_BIN" >/dev/null 2>&1 || return 1
+  local body
+  body="$("$CCUSAGE_BIN" blocks --active --json 2>/dev/null)" || return 1
+  [ -z "$body" ] && return 1
+  printf '%s' "$body"
+}
+
+# Credentials live where Claude Code puts them. With a custom CLAUDE_CONFIG_DIR
+# the keychain service name gets a suffix: <sha256(dir)>[0:8].
+keychain_services() {
+  echo "Claude Code-credentials"
+  if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && pick_python; then
+    local h
+    h="$("$PY" -c 'import hashlib,os,sys;print(hashlib.sha256(os.environ["CLAUDE_CONFIG_DIR"].encode()).hexdigest()[:8])' 2>/dev/null)"
+    [ -n "$h" ] && echo "Claude Code-credentials-$h"
+  fi
+}
+
+read_oauth_token() {
+  local creds="" svc
+  if [ "$OS" = macos ]; then
+    while IFS= read -r svc; do
+      [ -z "$svc" ] && continue
+      creds="$(security find-generic-password -s "$svc" -w 2>/dev/null)" && [ -n "$creds" ] && break
+      creds=""
+    done < <(keychain_services)
+  fi
+  [ -z "$creds" ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ -r "$CLAUDE_CONFIG_DIR/.credentials.json" ] \
+    && creds="$(cat "$CLAUDE_CONFIG_DIR/.credentials.json")"
+  [ -z "$creds" ] && [ -r "$HOME/.claude/.credentials.json" ] && creds="$(cat "$HOME/.claude/.credentials.json")"
+  [ -z "$creds" ] && return 1
+  pick_python || return 1
+  printf '%s' "$creds" | "$PY" -c 'import json,sys
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(1)
+o=d.get("claudeAiOauth") or d
+print(o.get("accessToken") or o.get("access_token") or "")' 2>/dev/null
+}
+
+fetch_oauth() {
+  [ "$USE_OAUTH_FALLBACK" != "true" ] && return 1
+  local last=0
+  [ -f "$OAUTH_STAMP" ] && last="$(cat "$OAUTH_STAMP" 2>/dev/null || echo 0)"
+  [ $(( $(now) - last )) -lt "$OAUTH_MIN_INTERVAL" ] && return 1
+  local token; token="$(read_oauth_token)" || return 1
+  [ -z "$token" ] && return 1
+  now >"$OAUTH_STAMP"
+  local body code
+  body="$(curl -sS --max-time 6 -w '\n%{http_code}' https://api.anthropic.com/api/oauth/usage \
+            -H "Authorization: Bearer $token" \
+            -H 'anthropic-beta: oauth-2025-04-20' 2>/dev/null)" || return 1
+  code="${body##*$'\n'}"; body="${body%$'\n'*}"
+  case "$code" in
+    200) printf '%s' "$body"; return 0 ;;
+    401|403) log "oauth: token rejected ($code). It is short-lived; use Claude Code once and it refreshes itself. claude-guard never rewrites your credentials." ;;
+    429) log "oauth: rate limited (429). Raise OAUTH_MIN_INTERVAL or run OpenUsage." ;;
+    *)   log "oauth: unexpected HTTP $code" ;;
+  esac
+  return 1
+}
+
+_refresh_inner() {
+  pick_python || { log "refresh: python3 unavailable"; return 1; }
+  local raw src
+  if raw="$(fetch_openusage)" && [ -n "$raw" ]; then       src=openusage
+  elif raw="$(fetch_ccusage)"  && [ -n "$raw" ]; then       src=ccusage
+  elif raw="$(fetch_oauth)"    && [ -n "$raw" ]; then       src=oauth
+  else
+    log "refresh: no usage source available"
+    return 1
+  fi
+  local out
+  out="$(printf '%s' "$raw" | "$PY" -c "$(normalize_py)" "$src" 2>/dev/null)" || {
+    log "refresh: could not parse response from $src"
+    printf '%s' "$raw" >"$CACHE_RAW" 2>/dev/null
+    return 1
+  }
+  printf '%s' "$raw" >"$CACHE_RAW" 2>/dev/null
+  printf '%s\n' "$out" >"$CACHE_ENV.tmp" && mv "$CACHE_ENV.tmp" "$CACHE_ENV"
+  return 0
+}
+
+# do_refresh [force] — backs off after a failure so a dead source cannot make
+# every tool call pay the curl timeout.
+do_refresh() {
+  if [ "${1:-}" != force ]; then
+    local fail_at=0
+    [ -f "$FAIL_STAMP" ] && fail_at="$(cat "$FAIL_STAMP" 2>/dev/null || echo 0)"
+    [ $(( $(now) - fail_at )) -lt "$FAIL_BACKOFF" ] && return 1
+  fi
+  if ! mkdir "$LOCK_FILE" 2>/dev/null; then
+    if [ $(( $(now) - $(file_mtime "$LOCK_FILE") )) -gt 60 ]; then
+      rmdir "$LOCK_FILE" 2>/dev/null
+      mkdir "$LOCK_FILE" 2>/dev/null || return 1
+    else
+      return 1
+    fi
+  fi
+  _refresh_inner; local rc=$?
+  rmdir "$LOCK_FILE" 2>/dev/null
+  if [ "$rc" -eq 0 ]; then rm -f "$FAIL_STAMP" 2>/dev/null; else now >"$FAIL_STAMP"; fi
+  return "$rc"
+}
+
+# ================================================================ reading ====
+SESSION_PCT=-1; SESSION_RESET_EPOCH=0
+WEEKLY_PCT=-1;  WEEKLY_RESET_EPOCH=0
+FETCHED_EPOCH=0; SOURCE=none; PLAN=""
+
+load_cache() {
+  # shellcheck disable=SC1090
+  [ -r "$CACHE_ENV" ] && . "$CACHE_ENV"
+  return 0
+}
+
+load_usage() { # load_usage [yes|no] — whether a stale cache may trigger a refresh
+  load_cache
+  if [ "${1:-yes}" = yes ] && { [ "$FETCHED_EPOCH" -eq 0 ] || [ $(( $(now) - FETCHED_EPOCH )) -gt "$CACHE_TTL" ]; }; then
+    do_refresh >/dev/null 2>&1
+    load_cache
+  fi
+}
+
+cache_age() { echo $(( $(now) - FETCHED_EPOCH )); }
+
+bypass_active() {
+  [ -f "$BYPASS_FILE" ] || return 1
+  local until; until="$(cat "$BYPASS_FILE" 2>/dev/null || echo 0)"
+  [ "$until" -gt "$(now)" ] 2>/dev/null && return 0
+  rm -f "$BYPASS_FILE" 2>/dev/null
+  return 1
+}
+
+# =============================================================== decision ====
+# Prints "ALLOW <why>" or "BLOCK <message>".
+#
+#   block  <=>  over threshold  AND  the window is more than GRACE minutes away
+#
+# The grace window matters: with 20 minutes left there is nothing to save, the
+# quota regenerates anyway. Without it the guard would be pure annoyance at
+# exactly the moment it costs nothing to keep working.
+decide() {
+  if [ "$GUARD_ENABLED" != "true" ]; then
+    echo "ALLOW guard disabled in guard.conf"; return
+  fi
+  if bypass_active; then
+    echo "ALLOW bypass active for another $(( ( $(cat "$BYPASS_FILE") - $(now) ) / 60 )) min"; return
+  fi
+
+  local age; age="$(cache_age)"
+  if [ "$FETCHED_EPOCH" -eq 0 ] || [ "$age" -gt "$STALE_MAX_SEC" ]; then
+    local how="stale for ${age}s"
+    [ "$FETCHED_EPOCH" -eq 0 ] && how="never collected"
+    if [ "$FAIL_MODE" = closed ]; then
+      echo "BLOCK No usage data ($how, FAIL_MODE=closed). Start your usage source, or run: claude-guard bypass 60"
+    else
+      echo "ALLOW usage data $how - failing open"
+    fi
+    return
+  fi
+
+  local m
+  if has_pct "$SESSION_PCT" && ge "$SESSION_PCT" "$SESSION_THRESHOLD"; then
+    m="$(mins_to "$SESSION_RESET_EPOCH")"
+    if [ "$m" -gt "$SESSION_GRACE_MIN" ]; then
+      echo "BLOCK 5h window at ${SESSION_PCT}% (limit ${SESSION_THRESHOLD}%), resets in ${m} min. Reserve protected. Override: claude-guard bypass 60"
+      return
+    fi
+  fi
+  if has_pct "$WEEKLY_PCT" && ge "$WEEKLY_PCT" "$WEEKLY_THRESHOLD"; then
+    m="$(mins_to "$WEEKLY_RESET_EPOCH")"
+    if [ "$m" -gt "$WEEKLY_GRACE_MIN" ]; then
+      echo "BLOCK Weekly limit at ${WEEKLY_PCT}% (limit ${WEEKLY_THRESHOLD}%), resets in $((m/60))h. Override: claude-guard bypass 60"
+      return
+    fi
+  fi
+  echo "ALLOW 5h=${SESSION_PCT}% 7d=${WEEKLY_PCT}%"
+}
+
+# ========================================================== notifications ====
+notify() {
+  local title="$1" body="$2"
+  if command -v terminal-notifier >/dev/null 2>&1; then
+    terminal-notifier -title "$title" -message "$body" -group claude-guard \
+      ${NOTIFY_SOUND:+-sound "$NOTIFY_SOUND"} >/dev/null 2>&1
+  elif [ "$OS" = macos ] && command -v osascript >/dev/null 2>&1; then
+    local t b
+    t="$(printf '%s' "$title" | sed 's/"/\\"/g')"
+    b="$(printf '%s' "$body"  | sed 's/"/\\"/g')"
+    if [ -n "$NOTIFY_SOUND" ]; then
+      osascript -e "display notification \"$b\" with title \"$t\" sound name \"$NOTIFY_SOUND\"" >/dev/null 2>&1
+    else
+      osascript -e "display notification \"$b\" with title \"$t\"" >/dev/null 2>&1
+    fi
+  elif command -v notify-send >/dev/null 2>&1; then
+    notify-send "$title" "$body" >/dev/null 2>&1
+  fi
+  return 0
+}
+
+ntfy() {
+  [ -z "${NTFY_TOPIC:-}" ] && return 0
+  local title="$1" body="$2" prio="${3:-${NTFY_PRIORITY:-default}}"
+  if ! curl -fsS --max-time 6 \
+        -H "Title: $title" -H "Priority: $prio" -H "Tags: robot" \
+        -d "$body" "${NTFY_SERVER:-https://ntfy.sh}/$NTFY_TOPIC" >/dev/null 2>&1; then
+    log "ntfy: send failed (topic=$NTFY_TOPIC)"
+    return 1
+  fi
+  return 0
+}
+
+alert() { notify "$1" "$2"; ntfy "$1" "$2" "${3:-}"; }
+
+alert_throttled() {
+  local last=0
+  [ -f "$NOTIFY_STAMP" ] && last="$(cat "$NOTIFY_STAMP" 2>/dev/null || echo 0)"
+  [ $(( $(now) - last )) -lt "$NOTIFY_DEDUPE_SEC" ] && return 0
+  now >"$NOTIFY_STAMP"
+  alert "$@"
+}
+
+# ================================================================ pending ====
+# When a session is blocked we record enough to offer a resume later: the
+# working directory, when it happened, and why.
+
+json_field() { # json_field <payload> <key>  (flat string fields only)
+  printf '%s' "$1" | tr ',' '\n' | grep -o "\"$2\"[^,}]*" | head -1 | sed 's/.*: *"//;s/"$//'
+}
+
+safe_id() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-64; }
+
+record_pending() {
+  local sid="$1" reason="$2"
+  [ -z "$sid" ] && sid=unknown
+  {
+    printf 'CWD=%q\n' "$PWD"
+    printf 'BLOCKED_AT=%s\n' "$(now)"
+    printf 'REASON=%q\n' "$reason"
+  } >"$PENDING_DIR/$(safe_id "$sid")" 2>/dev/null
+}
+
+prune_pending() {
+  local cutoff=$(( $(now) - AUTO_RESUME_MAX_AGE_H * 3600 ))
+  local f
+  for f in "$PENDING_DIR"/*; do
+    [ -e "$f" ] || continue
+    local BLOCKED_AT=0
+    # shellcheck disable=SC1090
+    . "$f" 2>/dev/null
+    [ "${BLOCKED_AT:-0}" -lt "$cutoff" ] && rm -f "$f" 2>/dev/null
+  done
+  return 0
+}
+
+pending_count() {
+  local n=0 f
+  for f in "$PENDING_DIR"/*; do [ -e "$f" ] && n=$((n+1)); done
+  echo "$n"
+}
+
+do_pending() {
+  prune_pending
+  local n; n="$(pending_count)"
+  if [ "$n" -eq 0 ]; then echo "No sessions waiting to resume."; return 0; fi
+  echo "$n session(s) blocked and resumable:"
+  local f
+  for f in "$PENDING_DIR"/*; do
+    [ -e "$f" ] || continue
+    local CWD="" BLOCKED_AT=0
+    # shellcheck disable=SC1090,SC2034
+    . "$f" 2>/dev/null
+    printf '  %-14s %s\n' "$(fmt_clock "$BLOCKED_AT")" "$CWD"
+  done
+}
+
+resume_cmd() { # resume_cmd <cwd>
+  printf 'cd %q && %s --continue %s -p %q' \
+    "$1" "$CLAUDE_BIN" "$AUTO_RESUME_ARGS" "$AUTO_RESUME_PROMPT"
+}
+
+# do_resume [--run]
+do_resume() {
+  prune_pending
+  local run=0
+  [ "${1:-}" = "--run" ] && run=1
+  local n; n="$(pending_count)"
+  if [ "$n" -eq 0 ]; then echo "Nothing to resume."; return 0; fi
+
+  local d; d="$(load_usage yes; decide)"
+  case "$d" in
+    BLOCK*) echo "Still blocked, resuming now would just be blocked again:"
+            echo "  ${d#BLOCK }"; return 1 ;;
+  esac
+
+  local i=0 f
+  for f in "$PENDING_DIR"/*; do
+    [ -e "$f" ] || continue
+    i=$((i+1))
+    [ "$i" -gt "$AUTO_RESUME_MAX" ] && { echo "  ... stopping at AUTO_RESUME_MAX=$AUTO_RESUME_MAX"; break; }
+    local CWD="" BLOCKED_AT=0
+    # shellcheck disable=SC1090,SC2034
+    . "$f" 2>/dev/null
+    [ -d "$CWD" ] || { rm -f "$f"; continue; }
+    local cmd; cmd="$(resume_cmd "$CWD")"
+    if [ "$run" -eq 1 ]; then
+      echo "resuming: $CWD"
+      log "resume: $CWD"
+      ( eval "$cmd" ) >>"$RESUME_LOG" 2>&1 &
+      rm -f "$f"
+    else
+      echo "$cmd"
+    fi
+  done
+  [ "$run" -eq 0 ] && echo "" && echo "Re-run with --run to execute these."
+  return 0
+}
+
+# ================================================================== hooks ====
+json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr '\n' ' '; }
+
+hook_pretool() {
+  local payload; payload="$(cat)"
+  load_usage yes
+  local d; d="$(decide)"
+  case "$d" in
+    BLOCK*)
+      local msg; msg="$(json_escape "${d#BLOCK }")"
+      record_pending "$(json_field "$payload" session_id)" "${d#BLOCK }"
+      log "BLOCK PreToolUse: ${d#BLOCK }"
+      alert_throttled "Claude Code stopped" "${d#BLOCK }" high
+      printf '{"continue":false,"stopReason":"[claude-guard] %s","hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"[claude-guard] %s"}}\n' "$msg" "$msg"
+      ;;
+  esac
+  exit 0
+}
+
+hook_prompt() {
+  local payload; payload="$(cat)"
+  local sid; sid="$(json_field "$payload" session_id)"
+  [ -z "$sid" ] && sid=default
+  now >"$TURN_DIR/$(safe_id "$sid")" 2>/dev/null
+
+  load_usage yes
+  local d; d="$(decide)"
+  case "$d" in
+    BLOCK*)
+      local msg; msg="$(json_escape "${d#BLOCK }")"
+      { printf '\n=== %s | %s ===\n' "$(date '+%F %T')" "$PWD"; printf '%s\n' "$payload"; } \
+        >>"$BLOCKED_PROMPTS" 2>/dev/null
+      record_pending "$sid" "${d#BLOCK }"
+      log "BLOCK UserPromptSubmit: ${d#BLOCK }"
+      alert_throttled "Claude Code stopped" "${d#BLOCK }" high
+      printf '{"continue":false,"stopReason":"[claude-guard] %s (your prompt was saved to %s)"}\n' "$msg" "$BLOCKED_PROMPTS"
+      ;;
+  esac
+  exit 0
+}
+
+hook_stop() {
+  local payload; payload="$(cat)"
+  [ "$NOTIFY_ON_STOP" != "true" ] && exit 0
+  local sid; sid="$(json_field "$payload" session_id)"
+  [ -z "$sid" ] && sid=default
+  sid="$(safe_id "$sid")"
+  local start=0
+  [ -f "$TURN_DIR/$sid" ] && start="$(cat "$TURN_DIR/$sid" 2>/dev/null || echo 0)"
+  rm -f "$TURN_DIR/$sid" 2>/dev/null
+  local dur=0
+  [ "$start" -gt 0 ] && dur=$(( $(now) - start ))
+  [ "$dur" -lt "$NOTIFY_MIN_TURN_SEC" ] && exit 0
+
+  load_usage no
+  local pct=""
+  has_pct "$SESSION_PCT" && pct=" - 5h at ${SESSION_PCT}%"
+  local mm=$(( dur / 60 )) ss=$(( dur % 60 )) human
+  if [ "$mm" -gt 0 ]; then human="${mm}m ${ss}s"; else human="${ss}s"; fi
+  alert "Claude Code finished" "Turn took ${human}${pct} - $(basename "$PWD")"
+  exit 0
+}
+
+# ================================================================ watcher ====
+# One tick: refresh, fire threshold alerts once per window, and detect the
+# moment the window rolls over so we can offer (or perform) a resume.
+do_watch() {
+  do_refresh force >/dev/null 2>&1
+  load_cache
+  has_pct "$SESSION_PCT" || exit 0
+
+  local ALERT_LAST_LEVEL=0 ALERT_LAST_WINDOW=0
+  # shellcheck disable=SC1090
+  [ -r "$ALERT_STATE" ] && . "$ALERT_STATE"
+  local last_level="${ALERT_LAST_LEVEL:-0}" last_window="${ALERT_LAST_WINDOW:-0}"
+
+  # --- window rollover -------------------------------------------------------
+  if [ "$last_window" != 0 ] && [ "$SESSION_RESET_EPOCH" != "$last_window" ]; then
+    prune_pending
+    local n; n="$(pending_count)"
+    if [ "$n" -gt 0 ]; then
+      log "window reset, $n pending session(s)"
+      if [ "$AUTO_RESUME" = true ]; then
+        alert "Usage window reset" "Resuming $n session(s) automatically."
+        do_resume --run >>"$RESUME_LOG" 2>&1
+      elif [ "$RESUME_NOTIFY" = true ]; then
+        alert "Usage window reset" "$n session(s) can be resumed: run claude-guard resume" high
+      fi
+    fi
+    last_level=0
+  fi
+  [ "$SESSION_RESET_EPOCH" != "$last_window" ] && last_level=0
+
+  # --- threshold alerts ------------------------------------------------------
+  local hit=0 lv
+  for lv in $ALERT_LEVELS; do
+    if ge "$SESSION_PCT" "$lv" && [ "$lv" -gt "$last_level" ]; then hit="$lv"; fi
+  done
+  if [ "$hit" -gt 0 ]; then
+    local m; m="$(mins_to "$SESSION_RESET_EPOCH")" extra=""
+    if ge "$SESSION_PCT" "$SESSION_THRESHOLD" && [ "$m" -gt "$SESSION_GRACE_MIN" ]; then
+      extra=" Claude Code is blocked. Cowork is not: close those tasks yourself."
+    fi
+    alert "Claude usage at ${SESSION_PCT}%" "Resets in ${m} min.${extra}"
+    log "ALERT level $hit (pct=$SESSION_PCT, resets in ${m}m)"
+    last_level="$hit"
+  fi
+
+  printf 'ALERT_LAST_LEVEL=%s\nALERT_LAST_WINDOW=%s\n' "$last_level" "$SESSION_RESET_EPOCH" >"$ALERT_STATE"
+}
+
+# ================================================================= status ====
+do_status() {
+  load_usage yes
+  local agetxt
+  if [ "$FETCHED_EPOCH" -eq 0 ]; then agetxt="never updated"; else agetxt="updated $(cache_age)s ago"; fi
+  echo "claude-guard $CLAUDE_GUARD_VERSION"
+  echo "  guard          : $([ "$GUARD_ENABLED" = true ] && echo enabled || echo DISABLED)"
+  if bypass_active; then
+    echo "  bypass         : ACTIVE for another $(( ( $(cat "$BYPASS_FILE") - $(now) ) / 60 )) min"
+  else
+    echo "  bypass         : no"
+  fi
+  echo "  data source    : $SOURCE ($agetxt)"
+  [ -n "$PLAN" ] && echo "  plan           : $PLAN"
+  if has_pct "$SESSION_PCT"; then
+    echo "  5h window      : ${SESSION_PCT}% (limit ${SESSION_THRESHOLD}%) - resets in $(mins_to "$SESSION_RESET_EPOCH") min"
+  else
+    echo "  5h window      : n/a"
+  fi
+  if has_pct "$WEEKLY_PCT"; then
+    echo "  weekly         : ${WEEKLY_PCT}% (limit ${WEEKLY_THRESHOLD}%) - resets in $(( $(mins_to "$WEEKLY_RESET_EPOCH") / 60 ))h"
+  else
+    echo "  weekly         : n/a"
+  fi
+  local p; p="$(pending_count)"
+  [ "$p" -gt 0 ] && echo "  pending resume : $p session(s) - run: claude-guard resume"
+  echo ""
+  echo "  decision now   : $(decide)"
+}
+
+do_bypass() {
+  local min="${1:-60}" until
+  until=$(( $(now) + min * 60 ))
+  echo "$until" >"$BYPASS_FILE"
+  log "BYPASS enabled for $min min"
+  echo "Bypass active for $min minutes (until $(fmt_clock "$until"))."
+}
+
+do_unbypass() { rm -f "$BYPASS_FILE"; log "BYPASS cleared"; echo "Bypass cleared, guard is active again."; }
+
+# =============================================================== selftest ====
+do_selftest() {
+  local fails=0
+  _case() { # name  pct  reset_offset_min  expected
+    SESSION_PCT="$2"; WEEKLY_PCT=10; WEEKLY_RESET_EPOCH=$(( $(now) + 864000 ))
+    SESSION_RESET_EPOCH=$(( $(now) + $3 * 60 )); FETCHED_EPOCH="$(now)"
+    local got; got="$(decide | cut -d' ' -f1)"
+    if [ "$got" = "$4" ]; then printf '  ok    %-44s -> %s\n' "$1" "$got"
+    else printf '  FAIL  %-44s -> %s (expected %s)\n' "$1" "$got" "$4"; fails=$((fails+1)); fi
+  }
+  _expect() { # name expected
+    local got; got="$(decide | cut -d' ' -f1)"
+    if [ "$got" = "$2" ]; then printf '  ok    %-44s -> %s\n' "$1" "$got"
+    else printf '  FAIL  %-44s -> %s (expected %s)\n' "$1" "$got" "$2"; fails=$((fails+1)); fi
+  }
+
+  echo "policy selftest (limit=${SESSION_THRESHOLD}%, grace=${SESSION_GRACE_MIN}min)"
+  rm -f "$BYPASS_FILE"
+  _case "below limit"                          42   180  ALLOW
+  _case "just below limit"                     89.9 180  ALLOW
+  _case "exactly at limit, reset far away"     90   180  BLOCK
+  _case "above limit, reset far away"          97   120  BLOCK
+  _case "above limit, resets in 25 min"        97   25   ALLOW
+  _case "above limit, resets in 31 min"        97   31   BLOCK
+  _case "at 100%, resets in 5 min"             100  5    ALLOW
+
+  SESSION_PCT=97; WEEKLY_PCT=10; FETCHED_EPOCH="$(now)"
+  WEEKLY_RESET_EPOCH=$(( $(now) + 864000 ))
+  SESSION_RESET_EPOCH=0
+  _expect "reset time unknown -> stay safe" BLOCK
+  SESSION_RESET_EPOCH=$(( $(now) - 600 ))
+  _expect "reset timestamp already past" ALLOW
+
+  SESSION_PCT=10; SESSION_RESET_EPOCH=$(( $(now) + 3600 )); FETCHED_EPOCH="$(now)"
+  WEEKLY_PCT=97;  WEEKLY_RESET_EPOCH=$(( $(now) + 864000 ))
+  _expect "weekly above limit" BLOCK
+  WEEKLY_RESET_EPOCH=$(( $(now) + 1800 ))
+  _expect "weekly above limit, inside grace" ALLOW
+
+  SESSION_PCT=99; SESSION_RESET_EPOCH=$(( $(now) + 7200 )); WEEKLY_PCT=10
+  FETCHED_EPOCH=$(( $(now) - STALE_MAX_SEC - 10 ))
+  _expect "stale data (fail-open)" ALLOW
+  FAIL_MODE=closed; _expect "stale data (fail-closed)" BLOCK; FAIL_MODE=open
+
+  FETCHED_EPOCH="$(now)"; SESSION_PCT=99
+  echo $(( $(now) + 600 )) >"$BYPASS_FILE"; _expect "bypass active" ALLOW
+  echo $(( $(now) - 10 ))  >"$BYPASS_FILE"; _expect "bypass expired" BLOCK
+  rm -f "$BYPASS_FILE"
+
+  GUARD_ENABLED=false; _expect "guard disabled" ALLOW; GUARD_ENABLED=true
+
+  echo ""
+  if [ "$fails" -eq 0 ]; then echo "all tests passed"; return 0; fi
+  echo "$fails test(s) failed"; return 1
+}
+
+# ==================================================================== cli ====
+case "${1:-status}" in
+  status)       do_status ;;
+  refresh)      do_refresh force && echo "cache updated" || { echo "refresh failed (see $LOG_FILE)"; exit 1; } ;;
+  watch)        do_watch ;;
+  pending)      do_pending ;;
+  resume)       do_resume "${2:-}" ;;
+  bypass)       do_bypass "${2:-60}" ;;
+  unbypass)     do_unbypass ;;
+  selftest)     do_selftest ;;
+  hook-pretool) hook_pretool ;;
+  hook-prompt)  hook_prompt ;;
+  hook-stop)    hook_stop ;;
+  notify-test)  notify "claude-guard" "If you can see this, desktop notifications work."; echo "sent" ;;
+  ntfy-test)
+    if [ -z "${NTFY_TOPIC:-}" ]; then
+      echo "no topic configured: set NTFY_TOPIC in $STATE_DIR/guard.conf"; exit 1
+    fi
+    if ntfy "claude-guard" "If you can see this on your phone, ntfy works."; then
+      echo "sent to ${NTFY_SERVER:-https://ntfy.sh}/$NTFY_TOPIC"
+    else
+      echo "send failed: server unreachable? see $LOG_FILE"; exit 1
+    fi ;;
+  version|--version|-v) echo "claude-guard $CLAUDE_GUARD_VERSION" ;;
+  help|--help|-h) sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) echo "unknown command: $1"; echo "try: claude-guard help"; exit 1 ;;
+esac

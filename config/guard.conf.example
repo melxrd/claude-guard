@@ -1,0 +1,96 @@
+# claude-guard configuration.
+#
+# The live copy lives at ~/.claude/usage-guard/guard.conf — edit that one.
+# Changes take effect immediately: the hooks re-read this file on every call,
+# so you never need to restart a session or reload the watcher.
+
+# ------------------------------------------------------------- main switch --
+# false = never block anything. Notifications keep working.
+GUARD_ENABLED=true
+
+# --------------------------------------------------------- blocking policy --
+# The rule is: block only if you are over the limit AND the window is more than
+# GRACE minutes away. The grace window is the point of the whole design — with
+# 20 minutes left there is nothing to save, so blocking would be pure friction.
+
+# 5-hour rolling window
+SESSION_THRESHOLD=90
+SESSION_GRACE_MIN=30
+
+# Weekly window. On smaller plans this is usually the binding limit, so the
+# grace window is larger: the last couple of hours are worth spending.
+WEEKLY_THRESHOLD=95
+WEEKLY_GRACE_MIN=120
+
+# -------------------------------------------------------------- fail-safe ---
+# What to do when usage data is missing or stale.
+#   open   = let everything through  <- recommended: a broken monitor must not
+#            stop you working
+#   closed = block anyway
+FAIL_MODE=open
+
+# Cache older than this is treated as missing, triggering FAIL_MODE.
+STALE_MAX_SEC=900
+
+# ---------------------------------------------------------- notifications ---
+# Desktop notification when a turn ends.
+NOTIFY_ON_STOP=true
+# Skip turns shorter than this, so quick answers stay quiet.
+NOTIFY_MIN_TURN_SEC=60
+# macOS sound name (Glass, Ping, Pop, Submarine, Hero, Funk...); "" for silent.
+NOTIFY_SOUND=Glass
+# At most one block notification per this many seconds.
+NOTIFY_DEDUPE_SEC=300
+# Warn once per window when usage crosses each of these percentages.
+ALERT_LEVELS="75 90 95"
+
+# --------------------------------------------------------- phone push (ntfy) -
+# Optional. Leave NTFY_TOPIC empty to disable. The topic is a secret address:
+# anyone who knows it can read your notifications, so use a long random string.
+# Install the ntfy app, subscribe to the same topic, then: claude-guard ntfy-test
+NTFY_TOPIC=""
+NTFY_SERVER=https://ntfy.sh
+# default | high | urgent   (blocks are always sent as high)
+NTFY_PRIORITY=default
+
+# ----------------------------------------------------------------- resume ---
+# When claude-guard blocks a session it remembers the working directory. When
+# the window resets it can start that work again.
+#
+# READ docs/auto-resume.md BEFORE LEAVING THIS ON. With AUTO_RESUME=true an
+# agent restarts while you are not at the keyboard, spends quota and may edit
+# files. That is the point — but it should be a decision, not a surprise.
+AUTO_RESUME=true
+RESUME_NOTIFY=true            # notify on reset even when AUTO_RESUME is false
+AUTO_RESUME_MAX=3             # never relaunch more than this many at once
+AUTO_RESUME_MAX_AGE_H=12      # forget sessions blocked longer ago than this
+AUTO_RESUME_PROMPT="Continue where you left off."
+# Extra flags for the relaunch. A headless run stalls on permission prompts, so
+# if your work needs file edits, set a permission mode here.
+AUTO_RESUME_ARGS=""
+CLAUDE_BIN=claude
+
+# ----------------------------------------------------------- data sources ---
+# Tried in order; the first that answers wins. See docs/data-sources.md.
+#
+# 1. OpenUsage — local HTTP API, instant, no rate limit. Optional.
+#    Set to "" to skip it entirely.
+OPENUSAGE_BASE=http://127.0.0.1:6736
+#
+# 2. Anthropic OAuth usage endpoint — authoritative, but undocumented and
+#    rate-limited, so it is queried at most once every OAUTH_MIN_INTERVAL
+#    seconds. claude-guard only reads your token, it never rewrites it.
+USE_OAUTH_FALLBACK=true
+OAUTH_MIN_INTERVAL=300
+#
+# 3. ccusage — local token estimate from your own logs. Least accurate, since
+#    it cannot see usage from other machines.
+USE_CCUSAGE=true
+CCUSAGE_BIN=ccusage
+
+# ------------------------------------------------------------ performance ---
+# How old the cache may get before a hook refreshes it inline.
+CACHE_TTL=60
+# After a failed refresh, don't retry for this long. Without it, a dead source
+# would make every single tool call pay the curl timeout.
+FAIL_BACKOFF=120
