@@ -459,9 +459,11 @@ else
     SET|UPDATED)
       ok "status line registered — usage comes straight from Claude Code, no API call" ;;
     EXISTS:*)
+      # printf %q, not hand-rolled quotes: a status line command containing a
+      # single quote would otherwise produce a broken line to copy.
       warn "you already have a status line: leaving it alone"
       say "  To capture usage as well, make your statusLine command:"
-      say "    $DEST/claude-reserve statusline --exec '${SL_RES#EXISTS:}'" ;;
+      say "    $DEST/claude-reserve statusline --exec $(printf '%q' "${SL_RES#EXISTS:}")" ;;
     *)
       warn "could not configure the status line (the other sources still work)" ;;
   esac

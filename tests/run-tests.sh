@@ -40,8 +40,13 @@ contains() { # contains <name> <needle> <haystack>
 
 PY=python3
 command -v "$PY" >/dev/null 2>&1 || { echo "python3 required"; exit 1; }
-PORT_OU=${PORT_OU:-16736}
-PORT_NTFY=${PORT_NTFY:-18899}
+# Fixed ports make the suite flaky: a previous run whose socket has not been
+# released yet gets picked up by wait_for, serving stale data. Ask the OS.
+free_port() { "$PY" -c 'import socket
+s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'; }
+PORT_OU="$(free_port)"
+PORT_NTFY="$(free_port)"
+PORT_OAUTH="$(free_port)"
 
 # ---------------------------------------------------------------- servers ---
 cat >"$TMP/fake_openusage.py" <<'PY'
@@ -286,7 +291,6 @@ if [ -d "$CLAUDE_RESERVE_STATE_DIR/refresh.lock" ]; then lock=present; else lock
 check "no stale lock left behind" "absent" "$lock"
 
 section "12. source priority (authoritative before estimate)"
-PORT_OAUTH=${PORT_OAUTH:-18737}
 PORT_OAUTH="$PORT_OAUTH" "$PY" "$TMP/fake_oauth.py" & OAUTH_PID=$!
 wait_for "http://127.0.0.1:$PORT_OAUTH/usage" "fake OAuth endpoint"
 

@@ -28,7 +28,7 @@
 
 set -uo pipefail
 
-CLAUDE_RESERVE_VERSION="1.1.0"
+CLAUDE_RESERVE_VERSION="1.1.1"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR="${CLAUDE_RESERVE_STATE_DIR:-$HOME/.claude/claude-reserve}"

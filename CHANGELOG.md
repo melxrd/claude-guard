@@ -3,6 +3,17 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] — 2026-07-28
+
+### Fixed
+- The line suggesting how to wrap an existing status line quoted the command
+  with hand-written single quotes, so a command containing one produced broken
+  shell to copy. Now uses `printf %q`. Cosmetic — it was text to copy, never
+  executed by the installer.
+- The test suite used fixed ports, so a run whose sockets had not been released
+  yet could latch onto the previous run's server and read stale data. Ports are
+  now allocated by the OS at startup; two suites can run concurrently.
+
 ## [1.1.0] — 2026-07-27
 
 ### Renamed
