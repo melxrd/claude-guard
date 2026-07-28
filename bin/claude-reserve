@@ -33,7 +33,7 @@
 
 set -uo pipefail
 
-CLAUDE_RESERVE_VERSION="1.2.2"
+CLAUDE_RESERVE_VERSION="1.2.3"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR="${CLAUDE_RESERVE_STATE_DIR:-$HOME/.claude/claude-reserve}"
@@ -88,6 +88,9 @@ CCUSAGE_TIMEOUT=8
 USE_OAUTH_FALLBACK=true
 OAUTH_MIN_INTERVAL=300
 OAUTH_USAGE_URL=https://api.anthropic.com/api/oauth/usage
+# Kept for comparison: `status` says so out loud when the config points the
+# token somewhere else, so a redirected endpoint cannot hide in a config file.
+OAUTH_USAGE_URL_DEFAULT=$OAUTH_USAGE_URL
 
 # Performance
 # Longer than the watcher interval (90s) on purpose: with a shorter TTL the
@@ -427,7 +430,10 @@ keychain_services() {
   echo "Claude Code-credentials"
   if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && pick_python; then
     local h
-    h="$("$PY" -c 'import hashlib,os,sys;print(hashlib.sha256(os.environ["CLAUDE_CONFIG_DIR"].encode()).hexdigest()[:8])' 2>/dev/null)"
+    # The value goes in as an argument, not through the environment: a
+    # CLAUDE_CONFIG_DIR that was set but never exported is invisible to a child
+    # process, and the hashed service name would then be silently skipped.
+    h="$("$PY" -c 'import hashlib,sys;print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:8])' "$CLAUDE_CONFIG_DIR" 2>/dev/null)"
     [ -n "$h" ] && echo "Claude Code-credentials-$h"
   fi
 }
@@ -458,6 +464,19 @@ fetch_oauth() {
   local last=0
   [ -f "$OAUTH_STAMP" ] && last="$(cat "$OAUTH_STAMP" 2>/dev/null || echo 0)"
   [ $(( $(now) - last )) -lt "$OAUTH_MIN_INTERVAL" ] && return 1
+  # Refuse to hand the token to anything but HTTPS. OAUTH_USAGE_URL lives in a
+  # config file, so this is the one setting where a bad value costs a
+  # credential rather than a wrong number; http:// or file:// is never a proxy
+  # setup worth supporting.
+  case "$OAUTH_USAGE_URL" in
+    https://*) : ;;
+    # Plaintext is allowed to loopback only, where it never leaves the machine
+    # — that is the shape a local proxy actually takes.
+    "http://127.0.0.1:"*|"http://127.0.0.1/"*|\
+    "http://localhost:"*|"http://localhost/"*|\
+    "http://[::1]:"*|"http://[::1]/"*) : ;;
+    *) log "OAUTH refusing non-https OAUTH_USAGE_URL: $OAUTH_USAGE_URL"; return 1 ;;
+  esac
   local token; token="$(read_oauth_token)" || return 1
   [ -z "$token" ] && return 1
   now >"$OAUTH_STAMP"
@@ -515,7 +534,12 @@ do_refresh() {
   fi
   if ! mkdir "$LOCK_FILE" 2>/dev/null; then
     if [ $(( $(now) - $(file_mtime "$LOCK_FILE") )) -gt 60 ]; then
-      rmdir "$LOCK_FILE" 2>/dev/null
+      # Reclaim a stale lock by renaming it away first. Two processes that both
+      # judged it stale would otherwise rmdir each other's *fresh* lock and run
+      # side by side; rename is atomic, so only one of them gets that far.
+      local stale="$LOCK_FILE.stale.$$"
+      mv "$LOCK_FILE" "$stale" 2>/dev/null || return 1
+      rmdir "$stale" 2>/dev/null
       mkdir "$LOCK_FILE" 2>/dev/null || return 1
     else
       return 1
@@ -936,6 +960,8 @@ do_status() {
     echo "  bypass         : no"
   fi
   echo "  data source    : $SOURCE ($agetxt)"
+  [ "$OAUTH_USAGE_URL" != "$OAUTH_USAGE_URL_DEFAULT" ] && \
+    echo "  oauth endpoint : CUSTOM - $OAUTH_USAGE_URL"
   [ -n "$PLAN" ] && echo "  plan           : $PLAN"
   if has_pct "$SESSION_PCT"; then
     echo "  5h window      : ${SESSION_PCT}% (limit ${SESSION_THRESHOLD}%) - resets in $(mins_to "$SESSION_RESET_EPOCH") min"
@@ -955,6 +981,24 @@ do_status() {
 
 do_bypass() {
   local min="${1:-60}" until
+  # Validate before the arithmetic: `bypass abc` would otherwise surface a raw
+  # bash arithmetic error, which reads like a crash rather than a typo.
+  case "$min" in
+    ''|*[!0-9]*)
+      echo "bypass: minutes must be a whole number (got: $min)" >&2
+      echo "  usage: claude-reserve bypass [minutes]   default 60" >&2
+      return 2 ;;
+  esac
+  if [ "$min" -eq 0 ]; then
+    echo "bypass: 0 minutes would do nothing - use: claude-reserve unbypass" >&2
+    return 2
+  fi
+  # A week is already an absurd bypass; past this the multiplication starts
+  # testing bash's integer range instead of your intent.
+  if [ "$min" -gt 10080 ]; then
+    echo "bypass: $min minutes is more than a week - cap is 10080" >&2
+    return 2
+  fi
   until=$(( $(now) + min * 60 ))
   echo "$until" >"$BYPASS_FILE"
   log "BYPASS enabled for $min min"

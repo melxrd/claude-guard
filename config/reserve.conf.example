@@ -96,7 +96,11 @@ OPENUSAGE_BASE=http://127.0.0.1:6736
 #    seconds. claude-reserve only reads your token, it never rewrites it.
 USE_OAUTH_FALLBACK=true
 OAUTH_MIN_INTERVAL=300
-# Override only if you route through a proxy.
+# Override only if you route through a proxy. This is the one setting that can
+# cost you a credential rather than a wrong number, so it is fenced: the token
+# is sent over https only, or to 127.0.0.1 for a local proxy. Anything else is
+# refused and logged, and `claude-reserve status` says out loud when the
+# endpoint is not Anthropic's.
 OAUTH_USAGE_URL=https://api.anthropic.com/api/oauth/usage
 #
 # 4. ccusage — local token estimate from your own logs. Least accurate, since

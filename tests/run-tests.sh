@@ -378,6 +378,63 @@ check "shipped config agrees"        "false" "$ce"
 check "installer turns it on only after asking" 1 \
       "$(grep -c 'set_conf AUTO_RESUME true' "$ROOT/install.sh")"
 
+section "16. bad input is answered, not crashed into"
+# `bypass abc` used to reach the arithmetic and print a bash error, which reads
+# like a crash rather than a typo.
+out="$(g bypass abc 2>&1)"; rc=$?
+check    "non-numeric bypass exits 2"      2 "$rc"
+contains "non-numeric bypass explains why" "must be a whole number" "$out"
+contains "non-numeric bypass shows usage"  "claude-reserve bypass [minutes]" "$out"
+out="$(g bypass 0 2>&1)"
+contains "zero minutes points at unbypass" "unbypass" "$out"
+out="$(g bypass 20000 2>&1)"
+contains "absurd bypass is capped"         "cap is 10080" "$out"
+g unbypass >/dev/null 2>&1
+out="$(g bypass 5 2>&1)"; rc=$?
+check    "a real value still works"        0 "$rc"
+g unbypass >/dev/null 2>&1
+
+section "17. the token only goes to https (or loopback)"
+# OAUTH_USAGE_URL sits in a config file, so it is the one setting where a bad
+# value costs a credential instead of a wrong number.
+# Section 13 shut its OAuth server down, so this section brings up its own.
+PORT_OAUTH="$(free_port)"
+PORT_OAUTH="$PORT_OAUTH" "$PY" "$TMP/fake_oauth.py" & OAUTH_PID=$!
+wait_for "http://127.0.0.1:$PORT_OAUTH/usage" "fake OAuth endpoint"
+mkdir -p "$TMP/cfg"
+printf '{"claudeAiOauth":{"accessToken":"test-token"}}\n' >"$TMP/cfg/.credentials.json"
+export CLAUDE_CONFIG_DIR="$TMP/cfg"
+
+conf 'USE_STATUSLINE=false' 'OPENUSAGE_BASE=""' 'USE_CCUSAGE=false' \
+     'USE_OAUTH_FALLBACK=true' 'OAUTH_MIN_INTERVAL=0' \
+     'OAUTH_USAGE_URL=http://example.com/usage'
+rm -f "$CLAUDE_RESERVE_STATE_DIR/statusline.json"
+reset_cache
+# Asserted as "not oauth" rather than a literal source name: with every source
+# refused there may be no usage.env at all, and the point is only that the
+# token was never sent.
+check    "plaintext remote endpoint is refused" "not-oauth" \
+         "$([ "$(source_of)" = oauth ] && echo oauth || echo not-oauth)"
+contains "and says so in the log" "refusing non-https" \
+         "$(cat "$CLAUDE_RESERVE_STATE_DIR/reserve.log" 2>/dev/null)"
+conf "OAUTH_USAGE_URL=http://127.0.0.1:$PORT_OAUTH/usage"
+reset_cache
+check    "loopback plaintext still allowed"     "oauth" "$(source_of)"
+out="$(g status 2>&1)"
+contains "status flags the custom endpoint" "oauth endpoint : CUSTOM" "$out"
+kill "$OAUTH_PID" 2>/dev/null; OAUTH_PID=""
+unset CLAUDE_CONFIG_DIR
+
+section "18. fixed once, fixed for good"
+# Two failures that only show up on someone else's machine, so they are pinned
+# here rather than left to be re-discovered: an apostrophe in $HOME used to
+# break the installer's eval, and a CLAUDE_CONFIG_DIR set without export was
+# invisible to the child python that hashes it.
+check "installer runs commands, never eval" 0 \
+      "$(grep -c '^[^#]*\beval\b' "$ROOT/install.sh")"
+check "config dir hashed from an argument"  1 \
+      "$(grep -c 'sha256(sys.argv\[1\]' "$ROOT/bin/claude-reserve")"
+
 # ================================================================ summary ====
 printf '\n\033[1m%s passed, %s failed\033[0m\n\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

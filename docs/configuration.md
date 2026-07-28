@@ -77,7 +77,7 @@ agent may do.
 | `USE_CCUSAGE` | `true` | Fall back to local token estimates |
 | `CCUSAGE_BIN` | `ccusage` | Path if not on `PATH` |
 | `CCUSAGE_TIMEOUT` | `8` | Seconds before a hanging ccusage is killed |
-| `OAUTH_USAGE_URL` | Anthropic endpoint | Override only behind a proxy |
+| `OAUTH_USAGE_URL` | Anthropic endpoint | Override only behind a proxy; https or loopback only |
 
 Raise `OAUTH_MIN_INTERVAL` if the log shows `429`. See
 [data-sources.md](data-sources.md).

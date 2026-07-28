@@ -85,7 +85,10 @@ claude-reserve fails open and logs why.
 The token is passed to curl through a config file on stdin, not on the command
 line — arguments are visible to any local user via `ps`.
 
-`OAUTH_USAGE_URL` overrides the endpoint; only useful behind a proxy.
+`OAUTH_USAGE_URL` overrides the endpoint; only useful behind a proxy. It is
+accepted only as `https://`, or `http://` to loopback where the traffic never
+leaves the machine — anything else is refused and logged, and `status` prints
+an `oauth endpoint : CUSTOM` line whenever it is not Anthropic's.
 
 **It rate-limits hard.** Hence `OAUTH_MIN_INTERVAL=300` — one call every five
 minutes at most, whatever the watcher interval. Raise it if you see `429` in the

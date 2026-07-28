@@ -57,8 +57,9 @@ say()  { printf '  %s\n' "$*"; }
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
 die()  { printf '  \033[31m✗\033[0m %s\n' "$*"; exit 1; }
-# shellcheck disable=SC2294  # commands are built as strings on purpose
-run()  { if [ "$DRY" = 1 ]; then printf '  [dry-run] %s\n' "$*"; else eval "$@"; fi; }
+# Arguments are passed through, never re-parsed by a shell: the old version
+# eval'd a string, so a $HOME containing a quote broke the command it built.
+run()  { if [ "$DRY" = 1 ]; then printf '  [dry-run] %s\n' "$*"; else "$@"; fi; }
 
 PY=""
 for c in /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
@@ -274,8 +275,8 @@ if [ "$MODE" = uninstall ]; then
       SKIPPED) say "  status line belongs to something else, left alone" ;;
     esac
   fi
-  run "rm -f '$BIN_DIR/claude-reserve'" && ok "claude-reserve command removed"
-  run "rm -f '$DEST/claude-reserve'"    && ok "script removed"
+  run rm -f "$BIN_DIR/claude-reserve" && ok "claude-reserve command removed"
+  run rm -f "$DEST/claude-reserve"    && ok "script removed"
   echo ""
   say "Config, logs and cache remain in $DEST — delete them yourself if you want:"
   say "  rm -rf $DEST"
@@ -373,7 +374,7 @@ if [ -z "$SRC" ] || [ ! -f "$SRC/bin/claude-reserve" ]; then
   say "running from curl — fetching files from $REPO@$REF"
 fi
 
-run "mkdir -p '$DEST' '$BIN_DIR'"
+run mkdir -p "$DEST" "$BIN_DIR"
 if [ "$DRY" = 1 ]; then
   say "[dry-run] would install bin/claude-reserve to $DEST/claude-reserve"
 else
@@ -433,7 +434,7 @@ if [ "$DRY" != 1 ] && [ "$CONF_IS_NEW" = 1 ]; then
   fi
 fi
 
-run "ln -sf '$DEST/claude-reserve' '$BIN_DIR/claude-reserve'"
+run ln -sf "$DEST/claude-reserve" "$BIN_DIR/claude-reserve"
 ok "claude-reserve command in $BIN_DIR"
 case ":$PATH:" in
   *":$BIN_DIR:"*) : ;;

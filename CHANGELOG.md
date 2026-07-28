@@ -3,6 +3,35 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.3] — 2026-07-28
+
+Fixes from a fourth external audit, which found no security issue and five
+small defects. Behaviour is unchanged unless you were hitting one of them.
+
+### Fixed
+- `bypass abc` reached the arithmetic and printed a bash error, which reads
+  like a crash rather than a typo. Non-numeric, zero and absurd values now get
+  a sentence and exit 2. The cap is a week.
+- The hashed keychain service name (macOS with a custom `CLAUDE_CONFIG_DIR`)
+  was computed by reading the variable from the *child* python's environment.
+  A `CLAUDE_CONFIG_DIR` set but never exported is invisible there, so the
+  suffixed service was silently skipped. The value is passed as an argument now.
+- A stale refresh lock was reclaimed with `rmdir` followed by `mkdir`. Two
+  processes that both judged it stale could delete each other's fresh lock and
+  refresh side by side. The lock is renamed away first, which is atomic.
+- The installer built its commands as strings and ran them through `eval`, so a
+  `$HOME` containing an apostrophe produced broken shell. Arguments are passed
+  through directly; `eval` is gone, and a test keeps it gone.
+
+### Security
+- The OAuth token is only sent over `https://`, or to loopback for a local
+  proxy. `OAUTH_USAGE_URL` lives in a config file, making it the one setting
+  where a wrong value costs a credential instead of a wrong number; a plaintext
+  remote endpoint is now refused and logged.
+- `status` prints an `oauth endpoint : CUSTOM` line when the configured
+  endpoint is not Anthropic's, so a redirected endpoint cannot sit unnoticed in
+  a config file.
+
 ## [1.2.2] — 2026-07-28
 
 ### Documented

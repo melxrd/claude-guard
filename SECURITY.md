@@ -11,7 +11,7 @@ past, so here is exactly what it does with it and what it never does.
 |---|---|---|
 | *(none)* | status line capture | reads what Claude Code already hands it — no request |
 | `127.0.0.1:6736` | if OpenUsage is running | local usage API, loopback only |
-| `api.anthropic.com/api/oauth/usage` | if OpenUsage is not available | your usage, with your token |
+| `api.anthropic.com/api/oauth/usage` | if OpenUsage is not available | your usage, with your token (https only) |
 | `$NTFY_SERVER` (default `ntfy.sh`) | only if **you** set `NTFY_TOPIC` | phone push; empty by default |
 
 Nothing else. No analytics, no telemetry, no update check, no error reporting.
@@ -37,6 +37,14 @@ trade you want.
 percentages, blocked prompts and working directory paths. Not credentials, but
 not for other accounts on the machine either.
 
+**`reserve.conf` is a trust boundary.** It is sourced as shell, so whoever can
+write it can run code as you — the same as any dotfile. One setting deserves
+naming: `OAUTH_USAGE_URL` decides where the token is sent. It is accepted only
+as `https://`, or `http://` to loopback where nothing leaves the machine, and
+`claude-reserve status` prints `oauth endpoint : CUSTOM` whenever it is not
+Anthropic's. Neither stops someone who already owns your home directory; both
+stop a redirected endpoint from sitting there unnoticed.
+
 ## What it executes
 
 Two places run something you did not type:
@@ -61,13 +69,13 @@ whatever is there at that moment.
 
 ```bash
 git clone https://github.com/melxrd/claude-reserve
-cd claude-reserve && git checkout v1.2.2
+cd claude-reserve && git checkout v1.2.3
 ./install.sh --dry-run
 ./install.sh
 ```
 
 **Read the diff before upgrading.** For a tool with read access to your
-credentials, `git diff v1.2.2..v1.2.3` is a reasonable habit.
+credentials, `git diff v1.2.3..v1.2.4` is a reasonable habit.
 
 **Verify what you install.** Everything lives in one file. `shellcheck
 bin/claude-reserve` and `./tests/run-tests.sh` both run offline and take seconds.
