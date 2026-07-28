@@ -11,7 +11,17 @@ curl -fsSL https://raw.githubusercontent.com/melxrd/claude-guard/main/install.sh
 macOS and Linux. Restart your Claude Code sessions afterwards — hooks load at
 startup. Uninstall: same command with `--uninstall`.
 
-Prefer to read first? `git clone`, then `./install.sh --dry-run`.
+**Before you run that**, read [SECURITY.md](SECURITY.md). This tool reads your
+Claude Code OAuth token, and the command above executes whatever `main` contains
+at the moment you run it. Pinning a release is the safer habit:
+
+```bash
+git clone https://github.com/melxrd/claude-guard
+cd claude-guard
+git checkout v1.0.2        # a tag you can audit, not a moving branch
+./install.sh --dry-run     # see exactly what it would do
+./install.sh
+```
 
 ## Why this exists
 
@@ -96,9 +106,11 @@ claude-guard runs:
 cd <blocked directory> && claude --continue -p "Continue where you left off."
 ```
 
-**`AUTO_RESUME` is on by default** — an agent restarts while you are away,
-spends quota and may edit files. Capped at 3 sessions and 12 hours. Set
-`AUTO_RESUME=false` for a notification instead.
+**The installer asks before enabling this.** An agent restarting while you are
+away spends quota and may edit files, so it is a question rather than a default.
+Answer at the prompt, or set `AUTO_RESUME` in `guard.conf` later. Piped through
+`curl` there is no terminal to ask, so it stays **off** — silence is not
+consent. Capped at 3 sessions and 12 hours.
 See [docs/auto-resume.md](docs/auto-resume.md).
 
 ## Where the numbers come from
@@ -112,6 +124,11 @@ See [docs/auto-resume.md](docs/auto-resume.md).
 First one that answers wins. claude-guard reads your Claude Code token and never
 rewrites it — including no token refresh, since a bad rotation could sign you
 out. See [docs/data-sources.md](docs/data-sources.md).
+
+The OAuth endpoint is **undocumented**: it is the one Claude Code itself uses,
+queried with your own credentials for your own data, but Anthropic never
+promised it would keep working and may change it without notice. If you would
+rather not touch it, set `USE_OAUTH_FALLBACK=false` and run OpenUsage instead.
 
 Hooks read a cache the watcher refreshes in the background — a few milliseconds
 per tool call. They do not normally touch the network. The exception: if the
@@ -174,10 +191,10 @@ resume.
 ./tests/run-tests.sh
 ```
 
-25 checks: the policy table (thresholds, grace, fail-open, fail-closed, bypass
+28 checks: the policy table (thresholds, grace, fail-open, fail-closed, bypass
 expiry) plus integration tests against fake usage and push servers — blocking,
-resume queue, window-reset detection, notification throttling, and behaviour
-when every source is down. No network, no effect on real state. CI runs them on
+resume queue, window-reset detection, source priority, timeouts, notification
+throttling, and behaviour when every source is down. No network, no effect on real state. CI runs them on
 macOS and Ubuntu.
 
 ## Docs
@@ -187,6 +204,7 @@ macOS and Ubuntu.
 - [Auto-resume](docs/auto-resume.md) — what an unattended restart means
 - [Notifications](docs/notifications.md) — desktop, phone, and the iOS gotchas
 - [Troubleshooting](docs/troubleshooting.md) — wrong blocks, and missing ones
+- [Security](SECURITY.md) — what it reads, what it runs, how to pin a release
 
 ## Contributing
 

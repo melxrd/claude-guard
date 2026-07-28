@@ -130,6 +130,24 @@ print('OK')
 PYEOF
 }
 
+# set_conf <key> <value> — rewrite the key in guard.conf, or append it.
+set_conf() {
+  "$PY" - "$DEST/guard.conf" "$1" "$2" <<'PYSET'
+import re, sys
+path, key, val = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    s = open(path).read()
+except OSError:
+    s = ''
+line = '%s=%s' % (key, val)
+if re.search(r'(?m)^%s=' % re.escape(key), s):
+    s = re.sub(r'(?m)^%s=.*$' % re.escape(key), line, s, count=1)
+else:
+    s = s.rstrip('\n') + '\n' + line + '\n'
+open(path, 'w').write(s)
+PYSET
+}
+
 # ================================================================= timer =====
 install_timer_macos() {
   mkdir -p "$(dirname "$PLIST")"
@@ -278,11 +296,12 @@ else
 fi
 ok "script installed in $DEST"
 
+CONF_IS_NEW=0
 if [ -f "$DEST/guard.conf" ]; then
   warn "guard.conf already exists: leaving your settings alone"
 else
   if [ "$DRY" = 1 ]; then say "[dry-run] would create $DEST/guard.conf"
-  else get_file "config/guard.conf.example" "$DEST/guard.conf"; fi
+  else get_file "config/guard.conf.example" "$DEST/guard.conf"; CONF_IS_NEW=1; fi
   ok "config created at $DEST/guard.conf"
 fi
 
@@ -290,18 +309,31 @@ fi
 # Recording the absolute path here is what stops auto-resume failing silently
 # for anyone whose claude lives under nvm, npm or a version manager.
 if [ "$DRY" != 1 ] && [ -n "$CLAUDE_PATH" ]; then
-  if grep -q '^CLAUDE_BIN=' "$DEST/guard.conf" 2>/dev/null; then
-    "$PY" - "$DEST/guard.conf" "$CLAUDE_PATH" <<'PYSET'
-import re, sys
-path, val = sys.argv[1], sys.argv[2]
-s = open(path).read()
-s = re.sub(r'(?m)^CLAUDE_BIN=.*$', 'CLAUDE_BIN=%s' % val, s, count=1)
-open(path, 'w').write(s)
-PYSET
-  else
-    printf '\nCLAUDE_BIN=%s\n' "$CLAUDE_PATH" >>"$DEST/guard.conf"
-  fi
+  set_conf CLAUDE_BIN "$CLAUDE_PATH"
   ok "CLAUDE_BIN set to $CLAUDE_PATH"
+fi
+
+# Auto-resume is the one setting that acts while nobody is watching, so it is a
+# question when there is someone to answer it — and off when there is not.
+# Piping through curl leaves no terminal, and silence is not consent.
+if [ "$DRY" != 1 ] && [ "$CONF_IS_NEW" = 1 ]; then
+  echo ""
+  say "Auto-resume: when your usage window resets, claude-guard can relaunch the"
+  say "sessions it blocked — on its own, while you are away. It spends quota and,"
+  say "depending on your permission settings, may edit files. Capped at 3 sessions"
+  say "and 12 hours. Details: docs/auto-resume.md"
+  if [ -t 0 ]; then
+    printf '  Enable auto-resume? [Y/n] '
+    read -r ans
+    case "$ans" in
+      [nN]*) set_conf AUTO_RESUME false; ok "auto-resume off — turn it on in guard.conf whenever you like" ;;
+      *)     set_conf AUTO_RESUME true;  ok "auto-resume on" ;;
+    esac
+  else
+    set_conf AUTO_RESUME false
+    warn "no terminal to ask, so auto-resume is OFF"
+    say "  Read docs/auto-resume.md, then set AUTO_RESUME=true in guard.conf to enable it."
+  fi
 fi
 
 run "ln -sf '$DEST/claude-guard' '$BIN_DIR/claude-guard'"

@@ -53,11 +53,16 @@ macOS needs `sed -i '' -e ...` — space after `-i`. Verify with `status`.
 
 ## 4. Decide about auto-resume
 
-It is on by default and it acts while nobody is watching. Do not skip this.
+The installer asks about this. If you piped it through `curl` there was no
+terminal to answer on, so it is off — check and decide with the user:
+
+```bash
+grep '^AUTO_RESUME=' ~/.claude/usage-guard/guard.conf
+```
 
 > **Say:** "When your window resets, claude-guard can restart the work it
 > interrupted by itself, while you're away — capped at 3 sessions, forgetting
-> anything older than 12 hours. On, or would you rather just get a notification?"
+> anything older than 12 hours. Right now it's *<on/off>*. Keep it that way?"
 
 Off:
 
@@ -65,9 +70,11 @@ Off:
 sed -i'' -e 's/^AUTO_RESUME=.*/AUTO_RESUME=false/' ~/.claude/usage-guard/guard.conf
 ```
 
-On, and their work edits files: warn that a headless resume stalls on permission
-prompts, and that the fix (`AUTO_RESUME_ARGS="--permission-mode acceptEdits"`)
-widens what an unattended agent may do. Only with explicit agreement.
+On, and their work edits files: tell them a headless resume stalls on permission
+prompts. Do **not** propose `AUTO_RESUME_ARGS="--permission-mode acceptEdits"`
+as a fix on your own — that combination is an unattended agent with widened
+write permissions. Describe the stall, let them ask for the trade, and only then
+set it.
 
 ## 5. Notifications
 

@@ -57,9 +57,11 @@ NTFY_PRIORITY=default
 # When claude-guard blocks a session it remembers the working directory. When
 # the window resets it can start that work again.
 #
-# READ docs/auto-resume.md BEFORE LEAVING THIS ON. With AUTO_RESUME=true an
+# READ docs/auto-resume.md BEFORE TURNING THIS ON. With AUTO_RESUME=true an
 # agent restarts while you are not at the keyboard, spends quota and may edit
-# files. That is the point — but it should be a decision, not a surprise.
+# files. That is the point — but it should be a decision, not a surprise, so
+# the installer asks and writes your answer here. A non-interactive install
+# (curl | bash) leaves it off.
 AUTO_RESUME=true
 RESUME_NOTIFY=true            # notify on reset even when AUTO_RESUME is false
 AUTO_RESUME_MAX=3             # never relaunch more than this many at once

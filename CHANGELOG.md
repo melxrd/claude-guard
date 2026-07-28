@@ -3,6 +3,35 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.2] — 2026-07-27
+
+Fixes from a second external audit, focused on supply chain and disclosure.
+
+### Changed — auto-resume is now a question, not a default
+The installer asks whether to enable auto-resume and records the answer. With no
+terminal to ask on — `curl | bash` — it stays off, because silence is not
+consent. Existing `guard.conf` files are never touched, so upgrades keep
+whatever you already chose.
+
+### Added
+- `SECURITY.md`: every network destination, what happens to the OAuth token,
+  what gets executed unattended, and how to pin a release instead of tracking
+  `main`.
+- The README now shows a tag-pinned install alongside the one-liner, and states
+  plainly that `curl | bash` runs whatever `main` holds at that moment.
+
+### Fixed
+- State directory is created `chmod 700`. It holds usage data, blocked prompts
+  and working directory paths — not credentials, but not world-readable either.
+- README claimed 25 tests; there are 28.
+
+### Changed
+- The undocumented status of the OAuth endpoint is stated in the README, not
+  only in the docs, together with `USE_OAUTH_FALLBACK=false` for anyone who
+  would rather not use it.
+- `docs/agent-setup.md` no longer offers `--permission-mode acceptEdits` as a
+  fix an assistant may suggest on its own.
+
 ## [1.0.1] — 2026-07-27
 
 Fixes from an external code audit.

@@ -1,7 +1,11 @@
 # Auto-resume
 
 Blocking alone just moves the problem. Auto-resume restarts the interrupted work
-once the usage window rolls over. **It is on by default.**
+once the usage window rolls over.
+
+**The installer asks whether to enable it.** Press Enter to accept, `n` to
+decline. When the installer is piped through `curl` there is no terminal to ask
+on, so it stays off and you enable it yourself after reading this page.
 
 ## What happens
 
