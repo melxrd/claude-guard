@@ -1,11 +1,11 @@
-# claude-guard
+# claude-reserve
 
 **A usage kill switch for Claude Code.** Stops Claude at 90% of your usage
 window so you keep a reserve, then resumes the interrupted work when the window
 resets.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/melxrd/claude-guard/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/melxrd/claude-reserve/main/install.sh | bash
 ```
 
 macOS and Linux. Restart your Claude Code sessions afterwards — hooks load at
@@ -16,9 +16,9 @@ Claude Code OAuth token, and the command above executes whatever `main` contains
 at the moment you run it. Pinning a release is the safer habit:
 
 ```bash
-git clone https://github.com/melxrd/claude-guard
-cd claude-guard
-git checkout v1.0.2        # a tag you can audit, not a moving branch
+git clone https://github.com/melxrd/claude-reserve
+cd claude-reserve
+git checkout v1.1.0        # a tag you can audit, not a moving branch
 ./install.sh --dry-run     # see exactly what it would do
 ./install.sh
 ```
@@ -29,7 +29,7 @@ You burn the 5-hour window on routine work by eleven. The urgent thing arrives
 at half past. Nothing left for four hours.
 
 Existing tools show you a percentage and let you walk off the cliff, or retry
-after you have already hit it. claude-guard stops you before it, keeping the
+after you have already hit it. claude-reserve stops you before it, keeping the
 last 10% for the moment you actually need it.
 
 ## The rule
@@ -49,7 +49,7 @@ Three deliberate choices:
   `FAIL_MODE=closed` if you disagree. One deliberate exception: when the
   percentage is known and over the limit but the reset time is not, it blocks —
   it cannot tell whether you are inside the grace window.
-- **Every block says how to undo it.** `claude-guard bypass 30` — the command is
+- **Every block says how to undo it.** `claude-reserve bypass 30` — the command is
   in the message, so you never have to remember it.
 - **Nothing is lost.** The blocked prompt is saved; the working directory is
   queued for resume.
@@ -57,14 +57,14 @@ Three deliberate choices:
 ## What it looks like
 
 ```
-claude-guard
+claude-reserve
   guard          : enabled
   bypass         : no
   data source    : oauth (updated 12s ago)
   plan           : Max
   5h window      : 91.4% (limit 90%) - resets in 96 min
   weekly         : 58.2% (limit 95%) - resets in 83h
-  pending resume : 1 session(s) - run: claude-guard resume
+  pending resume : 1 session(s) - run: claude-reserve resume
 
   decision now   : BLOCK 5h window at 91.4% (limit 90%), resets in 96 min. Reserve protected.
 ```
@@ -75,24 +75,27 @@ and needs nothing installed.
 ## Commands
 
 ```bash
-claude-guard status         # usage, limits, and the decision right now
-claude-guard bypass 60      # let everything through for an hour
-claude-guard unbypass       # re-arm
-claude-guard pending        # sessions waiting to resume
-claude-guard resume --run   # resume them
-claude-guard selftest       # re-run the policy tests
+claude-reserve status         # usage, limits, and the decision right now
+claude-reserve bypass 60      # let everything through for an hour
+claude-reserve unbypass       # re-arm
+claude-reserve pending        # sessions waiting to resume
+claude-reserve resume --run   # resume them
+claude-reserve selftest       # re-run the policy tests
 ```
 
-Config lives in `~/.claude/usage-guard/guard.conf` and applies immediately — no
+Config lives in `~/.claude/claude-reserve/reserve.conf` and applies immediately — no
 restart. To test a threshold, lower it below your current percentage and watch
 the `decision now` line.
 
 ## Install details
 
-The installer copies one script to `~/.claude/usage-guard/`, adds three hooks to
+The installer copies one script to `~/.claude/claude-reserve/`, adds three hooks to
 `~/.claude/settings.json` (backing it up, leaving your existing hooks alone),
-schedules a watcher every 90 seconds (launchd or systemd user timer), and puts
-`claude-guard` on your `PATH`.
+schedules a watcher every 90 seconds (launchd or systemd user timer), registers
+the status line if that slot is free, and puts `claude-reserve` on your `PATH`.
+
+Upgrading from **claude-guard**? The installer moves your old config, log and
+state across, removes the old watcher and hooks, and keeps every setting.
 
 **Requires:** bash, `curl`, `python3`. Optional: `terminal-notifier` (macOS),
 `libnotify-bin` (Linux).
@@ -100,7 +103,7 @@ schedules a watcher every 90 seconds (launchd or systemd user timer), and puts
 ## Resuming after a reset
 
 Blocked sessions record their working directory. When the window rolls over,
-claude-guard runs:
+claude-reserve runs:
 
 ```bash
 cd <blocked directory> && claude --continue -p "Continue where you left off."
@@ -108,7 +111,7 @@ cd <blocked directory> && claude --continue -p "Continue where you left off."
 
 **The installer asks before enabling this.** An agent restarting while you are
 away spends quota and may edit files, so it is a question rather than a default.
-Answer at the prompt, or set `AUTO_RESUME` in `guard.conf` later. Piped through
+Answer at the prompt, or set `AUTO_RESUME` in `reserve.conf` later. Piped through
 `curl` there is no terminal to ask, so it stays **off** — silence is not
 consent. Capped at 3 sessions and 12 hours.
 See [docs/auto-resume.md](docs/auto-resume.md).
@@ -117,13 +120,19 @@ See [docs/auto-resume.md](docs/auto-resume.md).
 
 | Source | Accuracy | Notes |
 |---|---|---|
+| Claude Code's status line | authoritative | Free: no request at all. Registered by the installer if the slot is free. |
 | [OpenUsage](https://github.com/robinebers/openusage) local API | authoritative | Instant, no rate limit. Optional. |
 | Anthropic OAuth usage endpoint | authoritative | Undocumented, rate-limited; queried every 5 min at most. |
 | [ccusage](https://github.com/ryoppippi/ccusage) | estimate | Local logs only; blind to other machines. |
 
-First one that answers wins. claude-guard reads your Claude Code token and never
+First one that answers wins. claude-reserve reads your Claude Code token and never
 rewrites it — including no token refresh, since a bad rotation could sign you
 out. See [docs/data-sources.md](docs/data-sources.md).
+
+Most installs never reach the OAuth endpoint at all: Claude Code hands its
+status line a `rate_limits` blob after every response, and capturing that is
+free and authoritative. The installer claims the status line only if you do not
+already have one; if you do, it prints how to wrap yours.
 
 The OAuth endpoint is **undocumented**: it is the one Claude Code itself uses,
 queried with your own credentials for your own data, but Anthropic never
@@ -141,8 +150,8 @@ failure backoff then keeps the next calls fast.
 | Channel | Covers | Part of |
 |---|---|---|
 | Claude app (Remote Control) | "Claude is asking you something" — prompts, questions | Claude Code |
-| ntfy | "work finished", "the guard stopped you" | claude-guard |
-| Desktop | everything, while you are at the machine | claude-guard |
+| ntfy | "work finished", "the guard stopped you" | claude-reserve |
+| Desktop | everything, while you are at the machine | claude-reserve |
 
 Turn on the first two — they cover different events. Only Claude Code's push can
 reach you while Claude waits for an answer; its "task finished" push is the less
@@ -191,7 +200,7 @@ resume.
 ./tests/run-tests.sh
 ```
 
-28 checks: the policy table (thresholds, grace, fail-open, fail-closed, bypass
+34 checks: the policy table (thresholds, grace, fail-open, fail-closed, bypass
 expiry) plus integration tests against fake usage and push servers — blocking,
 resume queue, window-reset detection, source priority, timeouts, notification
 throttling, and behaviour when every source is down. No network, no effect on real state. CI runs them on

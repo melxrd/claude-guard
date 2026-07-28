@@ -1,4 +1,4 @@
-# Setting up claude-guard for someone else
+# Setting up claude-reserve for someone else
 
 *Written for an AI assistant doing the setup. You do not need to read the
 source: run the commands, read the output, say the "**Say:**" lines.*
@@ -12,7 +12,7 @@ the user knows the one command that unblocks them.
 ## 1. Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/melxrd/claude-guard/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/melxrd/claude-reserve/main/install.sh | bash
 ```
 
 `✓` fine, `!` warning, `✗` stop. The only likely `✗` is a missing `python3`
@@ -22,15 +22,15 @@ curl -fsSL https://raw.githubusercontent.com/melxrd/claude-guard/main/install.sh
 ## 2. Check it sees real usage
 
 ```bash
-claude-guard status
+claude-reserve status
 ```
 
 The `data source` line must not be `none`. If it is, the guard is installed but
 inert — fix it before saying the user is protected:
 
-- OpenUsage installed → open it, then `claude-guard refresh`.
-- Otherwise the OAuth source should work: `claude-guard refresh`, then
-  `tail -5 ~/.claude/usage-guard/guard.log`. **On macOS the first read may raise
+- OpenUsage installed → open it, then `claude-reserve refresh`.
+- Otherwise the OAuth source should work: `claude-reserve refresh`, then
+  `tail -5 ~/.claude/claude-reserve/reserve.log`. **On macOS the first read may raise
   a keychain prompt — warn them before it appears.**
 - Log says `token rejected` → have them run any Claude Code command once, retry.
 
@@ -46,7 +46,7 @@ Then check `status`: if the weekly percentage runs far ahead of the 5-hour one
 (common on smaller plans), the weekly limit is their real constraint:
 
 ```bash
-sed -i'' -e 's/^WEEKLY_THRESHOLD=.*/WEEKLY_THRESHOLD=85/' ~/.claude/usage-guard/guard.conf
+sed -i'' -e 's/^WEEKLY_THRESHOLD=.*/WEEKLY_THRESHOLD=85/' ~/.claude/claude-reserve/reserve.conf
 ```
 
 macOS needs `sed -i '' -e ...` — space after `-i`. Verify with `status`.
@@ -57,17 +57,17 @@ The installer asks about this. If you piped it through `curl` there was no
 terminal to answer on, so it is off — check and decide with the user:
 
 ```bash
-grep '^AUTO_RESUME=' ~/.claude/usage-guard/guard.conf
+grep '^AUTO_RESUME=' ~/.claude/claude-reserve/reserve.conf
 ```
 
-> **Say:** "When your window resets, claude-guard can restart the work it
+> **Say:** "When your window resets, claude-reserve can restart the work it
 > interrupted by itself, while you're away — capped at 3 sessions, forgetting
 > anything older than 12 hours. Right now it's *<on/off>*. Keep it that way?"
 
 Off:
 
 ```bash
-sed -i'' -e 's/^AUTO_RESUME=.*/AUTO_RESUME=false/' ~/.claude/usage-guard/guard.conf
+sed -i'' -e 's/^AUTO_RESUME=.*/AUTO_RESUME=false/' ~/.claude/claude-reserve/reserve.conf
 ```
 
 On, and their work edits files: tell them a headless resume stalls on permission
@@ -79,12 +79,12 @@ set it.
 ## 5. Notifications
 
 ```bash
-claude-guard notify-test
+claude-reserve notify-test
 ```
 
 If nothing appears on macOS, the permission belongs to "Script Editor" or
 "terminal-notifier" in System Settings → Notifications — say so, they will look
-for "claude-guard".
+for "claude-reserve".
 
 **Set up both phone channels; they cover different events.**
 
@@ -111,8 +111,8 @@ terminal.
 
 ```bash
 python3 -c 'import secrets;print("claude-"+secrets.token_hex(8))'
-# put it in NTFY_TOPIC in ~/.claude/usage-guard/guard.conf
-claude-guard ntfy-test
+# put it in NTFY_TOPIC in ~/.claude/claude-reserve/reserve.conf
+claude-reserve ntfy-test
 ```
 
 App installed, subscribed to exactly that string.
@@ -134,15 +134,15 @@ Reviewing notification settings will not help; they are already correct.
 ## 6. Prove it, then hand over
 
 ```bash
-claude-guard status                      # note the 5h percentage
-sed -i'' -e 's/^SESSION_THRESHOLD=.*/SESSION_THRESHOLD=5/' ~/.claude/usage-guard/guard.conf
-claude-guard status                      # must now say BLOCK
-sed -i'' -e 's/^SESSION_THRESHOLD=.*/SESSION_THRESHOLD=90/' ~/.claude/usage-guard/guard.conf
-claude-guard status                      # back to ALLOW
+claude-reserve status                      # note the 5h percentage
+sed -i'' -e 's/^SESSION_THRESHOLD=.*/SESSION_THRESHOLD=5/' ~/.claude/claude-reserve/reserve.conf
+claude-reserve status                      # must now say BLOCK
+sed -i'' -e 's/^SESSION_THRESHOLD=.*/SESSION_THRESHOLD=90/' ~/.claude/claude-reserve/reserve.conf
+claude-reserve status                      # back to ALLOW
 ```
 
 > **Say:** "Three things. It stops Claude at *<N>%* and leaves you a reserve. If
-> it stops you and you need to work, run `claude-guard bypass 30` — the block
+> it stops you and you need to work, run `claude-reserve bypass 30` — the block
 > message tells you every time. And it can't stop Cowork: if an alert arrives
 > while Cowork tasks are running, close those yourself."
 
@@ -151,7 +151,7 @@ claude-guard status                      # back to ALLOW
 - **Restart their sessions** after installing, or nothing happens.
 - **Never leave a lowered threshold behind.** Restore and verify in the same
   session.
-- **Do not edit `bin/claude-guard`.** Everything tunable is in `guard.conf`.
+- **Do not edit `bin/claude-reserve`.** Everything tunable is in `reserve.conf`.
 - **Do not claim it protects Cowork** or their other machines.
 - **If the source is `none`, say so.** Silence leaves them believing they are
   protected when they are not.

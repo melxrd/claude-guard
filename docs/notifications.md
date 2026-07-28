@@ -3,11 +3,11 @@
 | Channel | Covers | Part of |
 |---|---|---|
 | Claude app (Remote Control) | "Claude is asking you something" — prompts, questions | Claude Code |
-| ntfy | "work finished", "the guard stopped you" | claude-guard |
-| Desktop | everything, while you are at the machine | claude-guard |
+| ntfy | "work finished", "the guard stopped you" | claude-reserve |
+| Desktop | everything, while you are at the machine | claude-reserve |
 
 Only Claude Code's push can reach you while Claude waits for an answer —
-claude-guard cannot see that state. Its "task finished" push is the less
+claude-reserve cannot see that state. Its "task finished" push is the less
 reliable half, which is where ntfy comes in. **Turn both on.**
 
 ---
@@ -69,20 +69,20 @@ an address.
 python3 -c 'import secrets;print("claude-"+secrets.token_hex(8))'
 ```
 
-Put it in `NTFY_TOPIC` in `~/.claude/usage-guard/guard.conf`, install the app
+Put it in `NTFY_TOPIC` in `~/.claude/claude-reserve/reserve.conf`, install the app
 ([iOS](https://apps.apple.com/app/ntfy/id1625396347),
 [Android](https://play.google.com/store/apps/details?id=io.heckel.ntfy)),
 subscribe to the same topic, then:
 
 ```bash
-claude-guard ntfy-test
+claude-reserve ntfy-test
 ```
 
 You get a push when a turn exceeds `NOTIFY_MIN_TURN_SEC`, when the guard blocks,
 and at each of `ALERT_LEVELS`.
 
 **The topic is the only secret** — anyone who knows it can read your
-notifications. To rotate it, change `guard.conf` and update the app **in the
+notifications. To rotate it, change `reserve.conf` and update the app **in the
 same sitting**: a mismatch is silent, the sender keeps reporting success.
 
 Blocks go out at `high` priority to cut through Focus modes; routine ones use
@@ -102,16 +102,16 @@ First available wins:
 3. `notify-send` (Linux, `apt install libnotify-bin`)
 
 ```bash
-claude-guard notify-test
+claude-reserve notify-test
 ```
 
 Nothing? The permission belongs to "Script Editor" or "terminal-notifier" in
-System Settings → Notifications, not "claude-guard".
+System Settings → Notifications, not "claude-reserve".
 
 Claude Code's own desktop notification only works in Ghostty, Kitty and iTerm2
 (iTerm2 also needs *Settings → Profiles → Terminal → Notification Center
 Alerts* and *Filter Alerts → Send escape sequence-generated alerts*).
-claude-guard's `Stop` hook works in any terminal and adds turn duration, usage
+claude-reserve's `Stop` hook works in any terminal and adds turn duration, usage
 and project name.
 
 ---

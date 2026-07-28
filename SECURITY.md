@@ -2,13 +2,14 @@
 
 ## What this tool can reach
 
-claude-guard reads your Claude Code OAuth token. That is not a detail to skim
+claude-reserve reads your Claude Code OAuth token. That is not a detail to skim
 past, so here is exactly what it does with it and what it never does.
 
 **Network destinations — all three, complete:**
 
 | Destination | When | Why |
 |---|---|---|
+| *(none)* | status line capture | reads what Claude Code already hands it — no request |
 | `127.0.0.1:6736` | if OpenUsage is running | local usage API, loopback only |
 | `api.anthropic.com/api/oauth/usage` | if OpenUsage is not available | your usage, with your token |
 | `$NTFY_SERVER` (default `ntfy.sh`) | only if **you** set `NTFY_TOPIC` | phone push; empty by default |
@@ -17,7 +18,7 @@ Nothing else. No analytics, no telemetry, no update check, no error reporting.
 
 **Credentials are read, never written.** The token is read from the macOS
 keychain (`Claude Code-credentials`) or `~/.claude/.credentials.json` and used
-for one GET request. claude-guard does not refresh, rotate or rewrite it — see
+for one GET request. claude-reserve does not refresh, rotate or rewrite it — see
 [docs/data-sources.md](docs/data-sources.md) for why refreshing was deliberately
 left out.
 
@@ -25,7 +26,7 @@ left out.
 on stdin, not on the command line, because arguments are readable by any local
 user.
 
-**State directory is `chmod 700`.** `~/.claude/usage-guard/` holds usage
+**State directory is `chmod 700`.** `~/.claude/claude-reserve/` holds usage
 percentages, blocked prompts and working directory paths. Not credentials, but
 not for other accounts on the machine either.
 
@@ -52,17 +53,17 @@ whatever is there at that moment.
 **Pin a release.** Tags are immutable; `main` is not:
 
 ```bash
-git clone https://github.com/melxrd/claude-guard
-cd claude-guard && git checkout v1.0.2
+git clone https://github.com/melxrd/claude-reserve
+cd claude-reserve && git checkout v1.1.0
 ./install.sh --dry-run
 ./install.sh
 ```
 
 **Read the diff before upgrading.** For a tool with read access to your
-credentials, `git diff v1.0.2..v1.0.3` is a reasonable habit.
+credentials, `git diff v1.1.0..v1.1.1` is a reasonable habit.
 
 **Verify what you install.** Everything lives in one file. `shellcheck
-bin/claude-guard` and `./tests/run-tests.sh` both run offline and take seconds.
+bin/claude-reserve` and `./tests/run-tests.sh` both run offline and take seconds.
 
 ## The undocumented endpoint
 

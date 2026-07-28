@@ -1,6 +1,6 @@
-# claude-guard configuration.
+# claude-reserve configuration.
 #
-# The live copy lives at ~/.claude/usage-guard/guard.conf — edit that one.
+# The live copy lives at ~/.claude/claude-reserve/reserve.conf — edit that one.
 # Changes take effect immediately: the hooks re-read this file on every call,
 # so you never need to restart a session or reload the watcher.
 
@@ -47,22 +47,25 @@ ALERT_LEVELS="75 90 95"
 # --------------------------------------------------------- phone push (ntfy) -
 # Optional. Leave NTFY_TOPIC empty to disable. The topic is a secret address:
 # anyone who knows it can read your notifications, so use a long random string.
-# Install the ntfy app, subscribe to the same topic, then: claude-guard ntfy-test
+# Install the ntfy app, subscribe to the same topic, then: claude-reserve ntfy-test
 NTFY_TOPIC=""
 NTFY_SERVER=https://ntfy.sh
 # default | high | urgent   (blocks are always sent as high)
 NTFY_PRIORITY=default
 
 # ----------------------------------------------------------------- resume ---
-# When claude-guard blocks a session it remembers the working directory. When
+# When claude-reserve blocks a session it remembers the working directory. When
 # the window resets it can start that work again.
 #
 # READ docs/auto-resume.md BEFORE TURNING THIS ON. With AUTO_RESUME=true an
 # agent restarts while you are not at the keyboard, spends quota and may edit
-# files. That is the point — but it should be a decision, not a surprise, so
-# the installer asks and writes your answer here. A non-interactive install
-# (curl | bash) leaves it off.
-AUTO_RESUME=true
+# files. That is the point — but it should be a decision, not a surprise.
+#
+# This file ships with it off, so copying the example by hand is never a
+# surprise either. The installer asks and writes your answer here: press Enter
+# at the prompt and it becomes true. A non-interactive install (curl | bash)
+# has nobody to ask, so it stays false.
+AUTO_RESUME=false
 RESUME_NOTIFY=true            # notify on reset even when AUTO_RESUME is false
 AUTO_RESUME_MAX=3             # never relaunch more than this many at once
 AUTO_RESUME_MAX_AGE_H=12      # forget sessions blocked longer ago than this
@@ -77,19 +80,26 @@ CLAUDE_BIN=claude
 # ----------------------------------------------------------- data sources ---
 # Tried in order; the first that answers wins. See docs/data-sources.md.
 #
-# 1. OpenUsage — local HTTP API, instant, no rate limit. Optional.
+# 1. Claude Code's own status line. It hands our statusline command a JSON blob
+#    containing rate_limits after every response — free, authoritative, no
+#    request at all. The installer registers it if the slot is free.
+USE_STATUSLINE=true
+STATUSLINE_MAX_AGE=600       # ignore a capture older than this (seconds)
+STATUSLINE_REFRESH_SEC=30    # how often the status line re-parses what it captured
+#
+# 2. OpenUsage — local HTTP API, instant, no rate limit. Optional.
 #    Set to "" to skip it entirely.
 OPENUSAGE_BASE=http://127.0.0.1:6736
 #
-# 2. Anthropic OAuth usage endpoint — authoritative, but undocumented and
+# 3. Anthropic OAuth usage endpoint — authoritative, but undocumented and
 #    rate-limited, so it is queried at most once every OAUTH_MIN_INTERVAL
-#    seconds. claude-guard only reads your token, it never rewrites it.
+#    seconds. claude-reserve only reads your token, it never rewrites it.
 USE_OAUTH_FALLBACK=true
 OAUTH_MIN_INTERVAL=300
 # Override only if you route through a proxy.
 OAUTH_USAGE_URL=https://api.anthropic.com/api/oauth/usage
 #
-# 3. ccusage — local token estimate from your own logs. Least accurate, since
+# 4. ccusage — local token estimate from your own logs. Least accurate, since
 #    it cannot see usage from other machines.
 USE_CCUSAGE=true
 CCUSAGE_BIN=ccusage

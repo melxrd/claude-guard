@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# claude-guard — a usage kill switch for Claude Code.
+# claude-reserve — a usage kill switch for Claude Code.
 #
 # Stops Claude Code when your rolling usage window crosses a threshold, so you
 # keep a reserve for when you actually need it. Lifts the block automatically
@@ -24,17 +24,17 @@
 # The hooks never make a synchronous network call on the hot path: they read a
 # small shell-format cache that the watcher refreshes in the background.
 #
-# https://github.com/melxrd/claude-guard — MIT licensed.
+# https://github.com/melxrd/claude-reserve — MIT licensed.
 
 set -uo pipefail
 
-CLAUDE_GUARD_VERSION="1.0.2"
+CLAUDE_RESERVE_VERSION="1.1.0"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STATE_DIR="${CLAUDE_GUARD_STATE_DIR:-$HOME/.claude/usage-guard}"
+STATE_DIR="${CLAUDE_RESERVE_STATE_DIR:-$HOME/.claude/claude-reserve}"
 
 # ============================================================== defaults =====
-# Every value below can be overridden in guard.conf.
+# Every value below can be overridden in reserve.conf.
 
 GUARD_ENABLED=true
 
@@ -70,6 +70,11 @@ AUTO_RESUME_ARGS=""         # e.g. "--permission-mode acceptEdits"
 CLAUDE_BIN=claude
 
 # Data sources
+# Claude Code hands the status line a JSON blob containing rate_limits after
+# every response. Capturing it costs nothing and is authoritative, so it wins.
+USE_STATUSLINE=true
+STATUSLINE_MAX_AGE=600
+STATUSLINE_REFRESH_SEC=30
 OPENUSAGE_BASE=http://127.0.0.1:6736
 USE_CCUSAGE=true
 CCUSAGE_BIN=ccusage
@@ -85,7 +90,7 @@ OAUTH_USAGE_URL=https://api.anthropic.com/api/oauth/usage
 CACHE_TTL=150
 FAIL_BACKOFF=120
 
-for _cf in "$STATE_DIR/guard.conf" "$SCRIPT_DIR/../config/guard.conf" ; do
+for _cf in "$STATE_DIR/reserve.conf" "$SCRIPT_DIR/../config/reserve.conf" ; do
   # shellcheck disable=SC1090
   [ -r "$_cf" ] && { . "$_cf"; break; }
 done
@@ -96,7 +101,7 @@ CACHE_RAW="$STATE_DIR/usage-raw.json"
 BYPASS_FILE="$STATE_DIR/BYPASS"
 ALERT_STATE="$STATE_DIR/alert-state"
 LOCK_FILE="$STATE_DIR/refresh.lock"
-LOG_FILE="$STATE_DIR/guard.log"
+LOG_FILE="$STATE_DIR/reserve.log"
 TURN_DIR="$STATE_DIR/turns"
 PENDING_DIR="$STATE_DIR/pending"
 RESUME_LOG="$STATE_DIR/resume.log"
@@ -104,6 +109,7 @@ OAUTH_STAMP="$STATE_DIR/.oauth-last"
 FAIL_STAMP="$STATE_DIR/.refresh-failed"
 NOTIFY_STAMP="$STATE_DIR/.last-notify"
 BLOCKED_PROMPTS="$STATE_DIR/blocked-prompts.log"
+STATUSLINE_FILE="$STATE_DIR/statusline.json"
 
 mkdir -p "$STATE_DIR" "$TURN_DIR" "$PENDING_DIR" 2>/dev/null
 # Usage percentages, blocked prompts and working directories are not secrets,
@@ -120,7 +126,18 @@ case "$(uname -s)" in
 esac
 
 file_mtime() {
-  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || now
+  # BSD and GNU stat disagree on the flag, and GNU's -f "succeeds" with output
+  # that is not a timestamp — so pick by platform and sanity-check the result.
+  local m
+  if [ "$OS" = macos ]; then
+    m="$(stat -f %m "$1" 2>/dev/null)"
+  else
+    m="$(stat -c %Y "$1" 2>/dev/null)"
+  fi
+  case "$m" in
+    ''|*[!0-9]*) now ;;
+    *) printf '%s\n' "$m" ;;
+  esac
 }
 
 fmt_clock() { # epoch -> HH:MM
@@ -292,15 +309,23 @@ def pct_of(line):
 out = {'SESSION_PCT': '', 'SESSION_RESET_EPOCH': '0',
        'WEEKLY_PCT': '', 'WEEKLY_RESET_EPOCH': '0', 'PLAN': ''}
 
-if source == 'oauth':
+if source in ('oauth', 'statusline'):
+    def pick(d, *names):
+        for n in names:
+            if isinstance(d, dict) and d.get(n) is not None:
+                return d[n]
+        return None
+
     fh = data.get('five_hour') or {}
     sd = data.get('seven_day') or {}
-    if fh.get('utilization') is not None:
-        out['SESSION_PCT'] = str(round(float(fh['utilization']), 1))
-        out['SESSION_RESET_EPOCH'] = str(iso2epoch(fh.get('resets_at')))
-    if sd.get('utilization') is not None:
-        out['WEEKLY_PCT'] = str(round(float(sd['utilization']), 1))
-        out['WEEKLY_RESET_EPOCH'] = str(iso2epoch(sd.get('resets_at')))
+    u = pick(fh, 'utilization', 'used_pct', 'used_percent')
+    if u is not None:
+        out['SESSION_PCT'] = str(round(float(u), 1))
+        out['SESSION_RESET_EPOCH'] = str(iso2epoch(pick(fh, 'resets_at', 'resetsAt')))
+    u = pick(sd, 'utilization', 'used_pct', 'used_percent')
+    if u is not None:
+        out['WEEKLY_PCT'] = str(round(float(u), 1))
+        out['WEEKLY_RESET_EPOCH'] = str(iso2epoch(pick(sd, 'resets_at', 'resetsAt')))
 
 elif source == 'ccusage':
     # `ccusage blocks --active --json` — token counts, not server-side truth.
@@ -352,6 +377,15 @@ for k in ('SESSION_PCT', 'SESSION_RESET_EPOCH', 'WEEKLY_PCT', 'WEEKLY_RESET_EPOC
 print('SOURCE=%s' % source)
 print('PLAN="%s"' % out['PLAN'])
 PYEOF
+}
+
+# The status line writes this file after every Claude Code response. No request,
+# no rate limit, and it is the same server-side data the OAuth endpoint returns.
+fetch_statusline() {
+  [ "$USE_STATUSLINE" != "true" ] && return 1
+  [ -r "$STATUSLINE_FILE" ] || return 1
+  [ $(( $(now) - $(file_mtime "$STATUSLINE_FILE") )) -gt "$STATUSLINE_MAX_AGE" ] && return 1
+  cat "$STATUSLINE_FILE"
 }
 
 fetch_openusage() {
@@ -424,7 +458,7 @@ CURLCFG
   code="${body##*$'\n'}"; body="${body%$'\n'*}"
   case "$code" in
     200) printf '%s' "$body"; return 0 ;;
-    401|403) log "oauth: token rejected ($code). It is short-lived; use Claude Code once and it refreshes itself. claude-guard never rewrites your credentials." ;;
+    401|403) log "oauth: token rejected ($code). It is short-lived; use Claude Code once and it refreshes itself. claude-reserve never rewrites your credentials." ;;
     429) log "oauth: rate limited (429). Raise OAUTH_MIN_INTERVAL or run OpenUsage." ;;
     *)   log "oauth: unexpected HTTP $code" ;;
   esac
@@ -437,7 +471,8 @@ _refresh_inner() {
   # Order matters: authoritative sources first, the local estimate last.
   # ccusage only sees this machine's logs, so preferring it would silently
   # under-report for anyone who also uses Claude Code elsewhere.
-  if raw="$(fetch_openusage)" && [ -n "$raw" ]; then       src=openusage
+  if raw="$(fetch_statusline)" && [ -n "$raw" ]; then      src=statusline
+  elif raw="$(fetch_openusage)" && [ -n "$raw" ]; then      src=openusage
   elif raw="$(fetch_oauth)"    && [ -n "$raw" ]; then       src=oauth
   elif raw="$(fetch_ccusage)"  && [ -n "$raw" ]; then       src=ccusage
   else
@@ -516,7 +551,7 @@ bypass_active() {
 # exactly the moment it costs nothing to keep working.
 decide() {
   if [ "$GUARD_ENABLED" != "true" ]; then
-    echo "ALLOW guard disabled in guard.conf"; return
+    echo "ALLOW guard disabled in reserve.conf"; return
   fi
   if bypass_active; then
     echo "ALLOW bypass active for another $(( ( $(cat "$BYPASS_FILE") - $(now) ) / 60 )) min"; return
@@ -527,7 +562,7 @@ decide() {
     local how="stale for ${age}s"
     [ "$FETCHED_EPOCH" -eq 0 ] && how="never collected"
     if [ "$FAIL_MODE" = closed ]; then
-      echo "BLOCK No usage data ($how, FAIL_MODE=closed). Start your usage source, or run: claude-guard bypass 60"
+      echo "BLOCK No usage data ($how, FAIL_MODE=closed). Start your usage source, or run: claude-reserve bypass 60"
     else
       echo "ALLOW usage data $how - failing open"
     fi
@@ -538,14 +573,14 @@ decide() {
   if has_pct "$SESSION_PCT" && ge "$SESSION_PCT" "$SESSION_THRESHOLD"; then
     m="$(mins_to "$SESSION_RESET_EPOCH")"
     if [ "$(secs_to "$SESSION_RESET_EPOCH")" -gt $(( SESSION_GRACE_MIN * 60 )) ]; then
-      echo "BLOCK 5h window at ${SESSION_PCT}% (limit ${SESSION_THRESHOLD}%), resets in ${m} min. Reserve protected. Override: claude-guard bypass 60"
+      echo "BLOCK 5h window at ${SESSION_PCT}% (limit ${SESSION_THRESHOLD}%), resets in ${m} min. Reserve protected. Override: claude-reserve bypass 60"
       return
     fi
   fi
   if has_pct "$WEEKLY_PCT" && ge "$WEEKLY_PCT" "$WEEKLY_THRESHOLD"; then
     m="$(mins_to "$WEEKLY_RESET_EPOCH")"
     if [ "$(secs_to "$WEEKLY_RESET_EPOCH")" -gt $(( WEEKLY_GRACE_MIN * 60 )) ]; then
-      echo "BLOCK Weekly limit at ${WEEKLY_PCT}% (limit ${WEEKLY_THRESHOLD}%), resets in $((m/60))h. Override: claude-guard bypass 60"
+      echo "BLOCK Weekly limit at ${WEEKLY_PCT}% (limit ${WEEKLY_THRESHOLD}%), resets in $((m/60))h. Override: claude-reserve bypass 60"
       return
     fi
   fi
@@ -556,7 +591,7 @@ decide() {
 notify() {
   local title="$1" body="$2"
   if command -v terminal-notifier >/dev/null 2>&1; then
-    terminal-notifier -title "$title" -message "$body" -group claude-guard \
+    terminal-notifier -title "$title" -message "$body" -group claude-reserve \
       ${NOTIFY_SOUND:+-sound "$NOTIFY_SOUND"} >/dev/null 2>&1
   elif [ "$OS" = macos ] && command -v osascript >/dev/null 2>&1; then
     local t b
@@ -711,7 +746,7 @@ hook_pretool() {
       record_pending "$(json_field "$payload" session_id)" "${d#BLOCK }"
       log "BLOCK PreToolUse: ${d#BLOCK }"
       alert_throttled "Claude Code stopped" "${d#BLOCK }" high
-      printf '{"continue":false,"stopReason":"[claude-guard] %s","hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"[claude-guard] %s"}}\n' "$msg" "$msg"
+      printf '{"continue":false,"stopReason":"[claude-reserve] %s","hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"[claude-reserve] %s"}}\n' "$msg" "$msg"
       ;;
   esac
   exit 0
@@ -733,7 +768,7 @@ hook_prompt() {
       record_pending "$sid" "${d#BLOCK }"
       log "BLOCK UserPromptSubmit: ${d#BLOCK }"
       alert_throttled "Claude Code stopped" "${d#BLOCK }" high
-      printf '{"continue":false,"stopReason":"[claude-guard] %s (your prompt was saved to %s)"}\n' "$msg" "$BLOCKED_PROMPTS"
+      printf '{"continue":false,"stopReason":"[claude-reserve] %s (your prompt was saved to %s)"}\n' "$msg" "$BLOCKED_PROMPTS"
       ;;
   esac
   exit 0
@@ -761,6 +796,67 @@ hook_stop() {
   exit 0
 }
 
+# ============================================================= status line ===
+# Registered as Claude Code's statusLine command. Claude Code pipes it a JSON
+# blob after every response; we keep the rate_limits part and print a line.
+#
+#   claude-reserve statusline                 print our own line
+#   claude-reserve statusline --exec "cmd"    capture, then hand the same JSON
+#                                             to your existing status line
+do_statusline() {
+  local payload; payload="$(cat)"
+  local exec_cmd="" captured=0
+  [ "${1:-}" = "--exec" ] && exec_cmd="${2:-}"
+
+  if [ "$USE_STATUSLINE" = "true" ] && pick_python; then
+    if printf '%s' "$payload" | "$PY" -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+rl = d.get("rate_limits") or d.get("rateLimits")
+if not isinstance(rl, dict):
+    sys.exit(1)
+json.dump(rl, sys.stdout)
+' >"$STATUSLINE_FILE.tmp" 2>/dev/null; then
+      mv "$STATUSLINE_FILE.tmp" "$STATUSLINE_FILE"
+      captured=1
+    else
+      rm -f "$STATUSLINE_FILE.tmp"
+    fi
+  fi
+
+  if [ -n "$exec_cmd" ]; then
+    printf '%s' "$payload" | eval "$exec_cmd"
+    return
+  fi
+
+  # Show what we just captured rather than whatever the cache holds — but the
+  # status line can be called often, so re-normalise at most every
+  # STATUSLINE_REFRESH_SEC. The capture itself always happens; only the parse
+  # is throttled.
+  load_cache
+  if [ "$captured" = 1 ] && [ $(( $(now) - FETCHED_EPOCH )) -gt "$STATUSLINE_REFRESH_SEC" ]; then
+    do_refresh force >/dev/null 2>&1
+    load_cache
+  elif [ "$captured" != 1 ]; then
+    load_usage yes
+  fi
+  if has_pct "$SESSION_PCT"; then
+    local m mark=""
+    m="$(mins_to "$SESSION_RESET_EPOCH")"
+    [ "$(decide | cut -d" " -f1)" = BLOCK ] && mark=" [BLOCKED]"
+    if has_pct "$WEEKLY_PCT"; then
+      printf "5h %s%% | 7d %s%% | reset %sm%s\n" "$SESSION_PCT" "$WEEKLY_PCT" "$m" "$mark"
+    else
+      printf "5h %s%% | reset %sm%s\n" "$SESSION_PCT" "$m" "$mark"
+    fi
+  else
+    printf "claude-reserve: no usage data yet\n"
+  fi
+}
+
 # ================================================================ watcher ====
 # One tick: refresh, fire threshold alerts once per window, and detect the
 # moment the window rolls over so we can offer (or perform) a resume.
@@ -784,7 +880,7 @@ do_watch() {
         alert "Usage window reset" "Resuming $n session(s) automatically."
         do_resume --run >>"$RESUME_LOG" 2>&1
       elif [ "$RESUME_NOTIFY" = true ]; then
-        alert "Usage window reset" "$n session(s) can be resumed: run claude-guard resume" high
+        alert "Usage window reset" "$n session(s) can be resumed: run claude-reserve resume" high
       fi
     fi
     last_level=0
@@ -814,7 +910,7 @@ do_status() {
   load_usage yes
   local agetxt
   if [ "$FETCHED_EPOCH" -eq 0 ]; then agetxt="never updated"; else agetxt="updated $(cache_age)s ago"; fi
-  echo "claude-guard $CLAUDE_GUARD_VERSION"
+  echo "claude-reserve $CLAUDE_RESERVE_VERSION"
   echo "  guard          : $([ "$GUARD_ENABLED" = true ] && echo enabled || echo DISABLED)"
   if bypass_active; then
     echo "  bypass         : ACTIVE for another $(( ( $(cat "$BYPASS_FILE") - $(now) ) / 60 )) min"
@@ -834,7 +930,7 @@ do_status() {
     echo "  weekly         : n/a"
   fi
   local p; p="$(pending_count)"
-  [ "$p" -gt 0 ] && echo "  pending resume : $p session(s) - run: claude-guard resume"
+  [ "$p" -gt 0 ] && echo "  pending resume : $p session(s) - run: claude-reserve resume"
   echo ""
   echo "  decision now   : $(decide)"
 }
@@ -926,17 +1022,18 @@ case "${1:-status}" in
   hook-pretool) hook_pretool ;;
   hook-prompt)  hook_prompt ;;
   hook-stop)    hook_stop ;;
-  notify-test)  notify "claude-guard" "If you can see this, desktop notifications work."; echo "sent" ;;
+  statusline)   shift; do_statusline "$@" ;;
+  notify-test)  notify "claude-reserve" "If you can see this, desktop notifications work."; echo "sent" ;;
   ntfy-test)
     if [ -z "${NTFY_TOPIC:-}" ]; then
-      echo "no topic configured: set NTFY_TOPIC in $STATE_DIR/guard.conf"; exit 1
+      echo "no topic configured: set NTFY_TOPIC in $STATE_DIR/reserve.conf"; exit 1
     fi
-    if ntfy "claude-guard" "If you can see this on your phone, ntfy works."; then
+    if ntfy "claude-reserve" "If you can see this on your phone, ntfy works."; then
       echo "sent to ${NTFY_SERVER:-https://ntfy.sh}/$NTFY_TOPIC"
     else
       echo "send failed: server unreachable? see $LOG_FILE"; exit 1
     fi ;;
-  version|--version|-v) echo "claude-guard $CLAUDE_GUARD_VERSION" ;;
+  version|--version|-v) echo "claude-reserve $CLAUDE_RESERVE_VERSION" ;;
   help|--help|-h) sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) echo "unknown command: $1"; echo "try: claude-guard help"; exit 1 ;;
+  *) echo "unknown command: $1"; echo "try: claude-reserve help"; exit 1 ;;
 esac

@@ -9,8 +9,8 @@ on, so it stays off and you enable it yourself after reading this page.
 
 ## What happens
 
-1. A session gets blocked. claude-guard writes its working directory, time and
-   reason to `~/.claude/usage-guard/pending/<session-id>`.
+1. A session gets blocked. claude-reserve writes its working directory, time and
+   reason to `~/.claude/claude-reserve/pending/<session-id>`.
 2. The watcher notes the window's reset timestamp every 90 seconds.
 3. When that timestamp changes, records older than `AUTO_RESUME_MAX_AGE_H` are
    dropped and the rest are run:
@@ -57,9 +57,9 @@ RESUME_NOTIFY=true
 You get notified when the window resets and work is waiting, then:
 
 ```bash
-claude-guard pending        # what is queued
-claude-guard resume         # print the commands, run nothing
-claude-guard resume --run   # actually resume
+claude-reserve pending        # what is queued
+claude-reserve resume         # print the commands, run nothing
+claude-reserve resume --run   # actually resume
 ```
 
 `resume` without `--run` prints commands so you can read them first. If the
@@ -94,5 +94,5 @@ it. The unit therefore sets `KillMode=process`, and resumes are launched with
 
 `tests/run-tests.sh` section 10 covers this end to end with a fake usage server
 and a stub `claude`. Against your real setup: lower `SESSION_THRESHOLD` until
-blocked, confirm `claude-guard pending` lists the directory, restore the
-threshold, then `claude-guard resume` to see the command it would run.
+blocked, confirm `claude-reserve pending` lists the directory, restore the
+threshold, then `claude-reserve resume` to see the command it would run.

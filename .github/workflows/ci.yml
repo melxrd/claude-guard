@@ -24,7 +24,7 @@ jobs:
         run: brew install shellcheck
 
       - name: Lint
-        run: shellcheck -S warning bin/claude-guard install.sh tests/run-tests.sh
+        run: shellcheck -S warning bin/claude-reserve install.sh tests/run-tests.sh
 
       - name: Test
         run: ./tests/run-tests.sh

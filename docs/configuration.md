@@ -1,11 +1,11 @@
 # Configuration
 
-Everything is in `~/.claude/usage-guard/guard.conf`, sourced on every hook call
-— **changes apply immediately**, no restart. `config/guard.conf.example` is the
+Everything is in `~/.claude/claude-reserve/reserve.conf`, sourced on every hook call
+— **changes apply immediately**, no restart. `config/reserve.conf.example` is the
 annotated reference; the installer never overwrites an existing config.
 
 ```bash
-claude-guard status
+claude-reserve status
 ```
 
 The `decision now` line is your config evaluated against real usage. Fastest way
@@ -39,7 +39,7 @@ number runs far ahead of the 5-hour one — common on smaller plans — then
 | `STALE_MAX_SEC` | `900` | Cache older than this counts as missing |
 
 `open` is right unless exceeding the limit costs you more than being unable to
-work. With `closed`, `claude-guard bypass` is your only way through.
+work. With `closed`, `claude-reserve bypass` is your only way through.
 
 ## Notifications
 
@@ -68,6 +68,9 @@ agent may do.
 
 | Setting | Default | Meaning |
 |---|---|---|
+| `USE_STATUSLINE` | `true` | Read usage from Claude Code's status line |
+| `STATUSLINE_MAX_AGE` | `600` | Ignore a capture older than this |
+| `STATUSLINE_REFRESH_SEC` | `30` | How often the status line re-parses |
 | `OPENUSAGE_BASE` | `http://127.0.0.1:6736` | `""` to skip |
 | `USE_OAUTH_FALLBACK` | `true` | Query the Anthropic usage endpoint |
 | `OAUTH_MIN_INTERVAL` | `300` | Minimum seconds between those queries |
@@ -97,5 +100,5 @@ everything unreachable: about 50ms per call.
 ## Testing a change
 
 Lower a threshold below current usage, check `status`, try a tool call in a
-session started *after* installation. Stuck? `claude-guard bypass 10`. Restore
+session started *after* installation. Stuck? `claude-reserve bypass 10`. Restore
 the threshold afterwards — leaving it low means being blocked for real.

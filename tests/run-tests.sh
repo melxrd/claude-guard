@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# claude-guard test suite.
+# claude-reserve test suite.
 #
 # Runs the policy selftest plus integration tests against fake servers, so
 # nothing here touches the network or your real Claude Code state.
@@ -10,10 +10,10 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-GUARD="$ROOT/bin/claude-guard"
+GUARD="$ROOT/bin/claude-reserve"
 TMP="$(mktemp -d)"
-export CLAUDE_GUARD_STATE_DIR="$TMP/state"
-mkdir -p "$CLAUDE_GUARD_STATE_DIR"
+export CLAUDE_RESERVE_STATE_DIR="$TMP/state"
+mkdir -p "$CLAUDE_RESERVE_STATE_DIR"
 
 PASS=0; FAIL=0
 OU_PID=""; NTFY_PID=""; OAUTH_PID=""
@@ -137,7 +137,7 @@ echo "RESUMED cwd=\$PWD args=\$*" >> "$TMP/resumed.log"
 EOF
 chmod +x "$TMP/fake-claude"
 
-cat >"$CLAUDE_GUARD_STATE_DIR/guard.conf" <<EOF
+cat >"$CLAUDE_RESERVE_STATE_DIR/reserve.conf" <<EOF
 GUARD_ENABLED=true
 SESSION_THRESHOLD=90
 SESSION_GRACE_MIN=30
@@ -164,11 +164,11 @@ EOF
 
 g() { "$GUARD" "$@"; }
 
-# later assignments win, because guard.conf is sourced top to bottom
-conf() { printf '%s\n' "$@" >>"$CLAUDE_GUARD_STATE_DIR/guard.conf"; }
-source_of() { g refresh >/dev/null 2>&1; sed -n 's/^SOURCE=//p' "$CLAUDE_GUARD_STATE_DIR/usage.env" 2>/dev/null; }
-reset_cache() { rm -f "$CLAUDE_GUARD_STATE_DIR/usage.env" "$CLAUDE_GUARD_STATE_DIR/.oauth-last" \
-                      "$CLAUDE_GUARD_STATE_DIR/.refresh-failed"; }
+# later assignments win, because reserve.conf is sourced top to bottom
+conf() { printf '%s\n' "$@" >>"$CLAUDE_RESERVE_STATE_DIR/reserve.conf"; }
+source_of() { g refresh >/dev/null 2>&1; sed -n 's/^SOURCE=//p' "$CLAUDE_RESERVE_STATE_DIR/usage.env" 2>/dev/null; }
+reset_cache() { rm -f "$CLAUDE_RESERVE_STATE_DIR/usage.env" "$CLAUDE_RESERVE_STATE_DIR/.oauth-last" \
+                      "$CLAUDE_RESERVE_STATE_DIR/.refresh-failed"; }
 
 # ================================================================== tests ====
 section "1. policy selftest"
@@ -209,7 +209,7 @@ contains "reason is explained"      '5h window at 94.0%'          "$out"
 
 out="$(echo '{"session_id":"s1","prompt":"hi"}' | g hook-prompt)"
 contains "UserPromptSubmit halts"   '"continue":false'            "$out"
-if [ -s "$CLAUDE_GUARD_STATE_DIR/blocked-prompts.log" ]; then saved=yes; else saved=no; fi
+if [ -s "$CLAUDE_RESERVE_STATE_DIR/blocked-prompts.log" ]; then saved=yes; else saved=no; fi
 check    "prompt was saved"         "yes" "$saved"
 
 section "5. grace window"
@@ -244,35 +244,35 @@ section "9. turn-finished notification"
 : >"$NTFY_LOG"
 start_openusage 42 120
 g refresh >/dev/null 2>&1
-mkdir -p "$CLAUDE_GUARD_STATE_DIR/turns"
-echo "$(( $(date +%s) - 300 ))" > "$CLAUDE_GUARD_STATE_DIR/turns/s5"
+mkdir -p "$CLAUDE_RESERVE_STATE_DIR/turns"
+echo "$(( $(date +%s) - 300 ))" > "$CLAUDE_RESERVE_STATE_DIR/turns/s5"
 echo '{"session_id":"s5"}' | g hook-stop >/dev/null
 contains "long turn notifies" "Claude Code finished" "$(cat "$NTFY_LOG")"
 : >"$NTFY_LOG"
-date +%s > "$CLAUDE_GUARD_STATE_DIR/turns/s6"
+date +%s > "$CLAUDE_RESERVE_STATE_DIR/turns/s6"
 echo '{"session_id":"s6"}' | g hook-stop >/dev/null
 check "short turn stays quiet" "" "$(cat "$NTFY_LOG")"
 
 section "10. window reset triggers auto-resume"
 : >"$TMP/resumed.log"; : >"$NTFY_LOG"
-rm -f "$CLAUDE_GUARD_STATE_DIR"/pending/* "$CLAUDE_GUARD_STATE_DIR/alert-state"
+rm -f "$CLAUDE_RESERVE_STATE_DIR"/pending/* "$CLAUDE_RESERVE_STATE_DIR/alert-state"
 # get blocked, which records a pending session
 start_openusage 94 120
 g refresh >/dev/null 2>&1
 ( cd "$TMP" && echo '{"session_id":"s7"}' | "$GUARD" hook-pretool >/dev/null )
-check "pending recorded" 1 "$(ls "$CLAUDE_GUARD_STATE_DIR/pending" | wc -l | tr -d ' ')"
+check "pending recorded" 1 "$(ls "$CLAUDE_RESERVE_STATE_DIR/pending" | wc -l | tr -d ' ')"
 g watch                      # first tick: learn the current window
 # the window rolls over: usage drops, reset time changes
 start_openusage 3 300
 g watch                      # second tick: detect rollover and resume
 sleep 1
 contains "session was resumed" "RESUMED cwd=$TMP" "$(cat "$TMP/resumed.log" 2>/dev/null)"
-check "pending queue drained" 0 "$(ls "$CLAUDE_GUARD_STATE_DIR/pending" | wc -l | tr -d ' ')"
+check "pending queue drained" 0 "$(ls "$CLAUDE_RESERVE_STATE_DIR/pending" | wc -l | tr -d ' ')"
 
 section "11. degrading gracefully"
 [ -n "$OU_PID" ] && { kill "$OU_PID" 2>/dev/null; OU_PID=""; }
 sleep 0.3
-rm -f "$CLAUDE_GUARD_STATE_DIR/usage.env" "$CLAUDE_GUARD_STATE_DIR/.refresh-failed"
+rm -f "$CLAUDE_RESERVE_STATE_DIR/usage.env" "$CLAUDE_RESERVE_STATE_DIR/.refresh-failed"
 start=$(now_ms)
 out="$(echo '{"session_id":"s8"}' | g hook-pretool)"
 elapsed=$(( $(now_ms) - start ))
@@ -282,7 +282,7 @@ if [ "$elapsed" -lt 4000 ]; then
 else
   printf '  \033[31mFAIL\033[0m hook too slow without a source (%sms)\n' "$elapsed"; FAIL=$((FAIL+1))
 fi
-if [ -d "$CLAUDE_GUARD_STATE_DIR/refresh.lock" ]; then lock=present; else lock=absent; fi
+if [ -d "$CLAUDE_RESERVE_STATE_DIR/refresh.lock" ]; then lock=present; else lock=absent; fi
 check "no stale lock left behind" "absent" "$lock"
 
 section "12. source priority (authoritative before estimate)"
@@ -326,6 +326,42 @@ else
 fi
 kill "$OAUTH_PID" 2>/dev/null
 unset CLAUDE_CONFIG_DIR
+
+section "14. status line capture (free, authoritative, wins over the rest)"
+reset_cache
+rm -f "$CLAUDE_RESERVE_STATE_DIR/statusline.json"
+start_openusage 42 120
+conf \
+  'USE_STATUSLINE=true' \
+  'STATUSLINE_MAX_AGE=600' \
+  "OPENUSAGE_BASE=http://127.0.0.1:$PORT_OU" \
+  'USE_OAUTH_FALLBACK=false' \
+  'USE_CCUSAGE=false'
+
+SL_RESET="$("$PY" -c 'import time;print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time()+5400)))')"
+sl_payload() { printf '{"model":{"id":"opus"},"rate_limits":{"five_hour":{"utilization":%s,"resets_at":"%s"},"seven_day":{"utilization":61.0,"resets_at":"%s"}}}' "$1" "$SL_RESET" "$SL_RESET"; }
+
+out="$(sl_payload 42.5 | g statusline)"
+contains "status line prints usage"      "5h 42.5%"  "$out"
+check    "capture file written"          0 "$([ -s "$CLAUDE_RESERVE_STATE_DIR/statusline.json" ] && echo 0 || echo 1)"
+check    "capture beats OpenUsage"       "statusline" "$(source_of)"
+
+# a payload without rate_limits (API key users, older Claude Code) must not break
+out="$(printf '{"model":{"id":"opus"}}' | g statusline)"; rc=$?
+check "no rate_limits is survivable" 0 "$rc"
+
+# a stale capture must fall back to the next source
+"$PY" -c 'import os,sys,time; p=sys.argv[1]; t=time.time()-99999; os.utime(p,(t,t))' \
+  "$CLAUDE_RESERVE_STATE_DIR/statusline.json"
+reset_cache
+check "stale capture falls back" "openusage" "$(source_of)"
+
+# and blocking is reflected in the line itself
+conf 'SESSION_THRESHOLD=10'
+rm -f "$CLAUDE_RESERVE_STATE_DIR/statusline.json"
+out="$(sl_payload 93.0 | g statusline)"
+contains "line flags a block" "[BLOCKED]" "$out"
+conf 'SESSION_THRESHOLD=90'
 
 # ================================================================ summary ====
 printf '\n\033[1m%s passed, %s failed\033[0m\n\n' "$PASS" "$FAIL"

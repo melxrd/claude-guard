@@ -4,7 +4,7 @@
 
 ```bash
 ./tests/run-tests.sh
-shellcheck -S warning bin/claude-guard install.sh tests/run-tests.sh
+shellcheck -S warning bin/claude-reserve install.sh tests/run-tests.sh
 ```
 
 Both must pass. CI runs them on macOS and Ubuntu.
@@ -37,7 +37,7 @@ python3 is only used for JSON parsing. Please do not add a runtime.
 
 ## Reporting a bug
 
-For a wrong percentage, attach `~/.claude/usage-guard/usage-raw.json` — that is
+For a wrong percentage, attach `~/.claude/claude-reserve/usage-raw.json` — that is
 the raw response the parser saw, and it is usually enough to find the problem.
 For a block that should not have happened, attach the relevant lines of
-`guard.log` and the output of `claude-guard status`.
+`reserve.log` and the output of `claude-reserve status`.

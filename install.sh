@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# claude-guard installer.
+# claude-reserve installer.
 #
 #   ./install.sh              install
 #   ./install.sh --dry-run    show what would happen, change nothing
 #   ./install.sh --uninstall  remove hooks, timer and binary (config and logs stay)
 #
-# Installs to ~/.claude/usage-guard, registers three Claude Code hooks in
+# Installs to ~/.claude/claude-reserve, registers three Claude Code hooks in
 # ~/.claude/settings.json (non-destructively, with a backup), and schedules a
 # watcher every 90 seconds via launchd (macOS) or a systemd user timer (Linux).
 
@@ -15,13 +15,13 @@ set -uo pipefail
 # Works two ways: from a clone, or piped straight from curl. When the sibling
 # files are missing we fetch them from the repo instead.
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)" || SRC=""
-REPO="${CLAUDE_GUARD_REPO:-melxrd/claude-guard}"
-REF="${CLAUDE_GUARD_REF:-main}"
+REPO="${CLAUDE_RESERVE_REPO:-melxrd/claude-reserve}"
+REF="${CLAUDE_RESERVE_REF:-main}"
 RAW_BASE="https://raw.githubusercontent.com/$REPO/$REF"
-DEST="$HOME/.claude/usage-guard"
+DEST="$HOME/.claude/claude-reserve"
 SETTINGS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
 BIN_DIR="$HOME/.local/bin"
-LABEL="com.claudeguard.watch"
+LABEL="com.claudereserve.watch"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 SYSTEMD_DIR="$HOME/.config/systemd/user"
 DRY=0
@@ -32,15 +32,15 @@ for a in "$@"; do
     --uninstall) MODE=uninstall ;;
     --dry-run)   DRY=1 ;;
     -h|--help)   cat <<'USAGE'
-claude-guard installer
+claude-reserve installer
 
   install.sh              install
   install.sh --dry-run    show what would happen, change nothing
   install.sh --uninstall  remove hooks, timer and binary (config and logs stay)
 
 Environment:
-  CLAUDE_GUARD_REPO   owner/name to fetch from when run via curl (default melxrd/claude-guard)
-  CLAUDE_GUARD_REF    branch or tag to fetch (default main)
+  CLAUDE_RESERVE_REPO   owner/name to fetch from when run via curl (default melxrd/claude-reserve)
+  CLAUDE_RESERVE_REF    branch or tag to fetch (default main)
 USAGE
                  exit 0 ;;
     *) echo "unknown option: $a"; exit 1 ;;
@@ -66,7 +66,7 @@ for c in /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
 done
 
 # ============================================================ settings.json ==
-# Removes any previous claude-guard entries and re-adds the current three,
+# Removes any previous claude-reserve entries and re-adds the current three,
 # leaving every other hook untouched.
 patch_settings() {
   local action="$1" target="$2"
@@ -101,7 +101,10 @@ EVENTS = {'PreToolUse': 'hook-pretool',
           'Stop': 'hook-stop'}
 
 def is_ours(entry):
-    return any('claude-guard' in str(h.get('command', ''))
+    # 'claude-guard' is the pre-1.1 name: still matched so an upgrade replaces
+    # the old hooks instead of leaving two sets registered.
+    return any(('claude-reserve' in str(h.get('command', ''))
+                or 'claude-guard' in str(h.get('command', '')))
                for h in (entry.get('hooks') or []))
 
 for ev in EVENTS:
@@ -130,9 +133,9 @@ print('OK')
 PYEOF
 }
 
-# set_conf <key> <value> — rewrite the key in guard.conf, or append it.
+# set_conf <key> <value> — rewrite the key in reserve.conf, or append it.
 set_conf() {
-  "$PY" - "$DEST/guard.conf" "$1" "$2" <<'PYSET'
+  "$PY" - "$DEST/reserve.conf" "$1" "$2" <<'PYSET'
 import re, sys
 path, key, val = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
@@ -148,6 +151,49 @@ open(path, 'w').write(s)
 PYSET
 }
 
+# ============================================================== statusline ===
+# Claude Code allows exactly one statusLine command, so we only ever claim an
+# empty slot. If one is already there it stays, and we print how to wrap it.
+setup_statusline() {
+  "$PY" - "$SETTINGS" "$DEST/claude-reserve" "${1:-set}" <<'PYSL'
+import json, os, sys
+
+path, binpath, action = sys.argv[1], sys.argv[2], sys.argv[3]
+data = {}
+if os.path.exists(path):
+    try:
+        txt = open(path).read().strip()
+        data = json.loads(txt) if txt else {}
+    except Exception:
+        print('ERROR'); sys.exit(1)
+
+cur = data.get('statusLine')
+cmd = cur.get('command', '') if isinstance(cur, dict) else (cur or '')
+ours = 'claude-reserve statusline' in str(cmd) or 'claude-guard statusline' in str(cmd)
+
+if action == 'remove':
+    if not ours:
+        print('SKIPPED'); sys.exit(0)
+    data.pop('statusLine', None)
+    result = 'REMOVED'
+else:
+    want = '%s statusline' % binpath
+    if ours:
+        data['statusLine'] = {'type': 'command', 'command': want}
+        result = 'UPDATED'
+    elif cmd:
+        print('EXISTS:%s' % cmd); sys.exit(0)
+    else:
+        data['statusLine'] = {'type': 'command', 'command': want}
+        result = 'SET'
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(data, f, indent=2); f.write('\n')
+print(result)
+PYSL
+}
+
 # ================================================================= timer =====
 install_timer_macos() {
   mkdir -p "$(dirname "$PLIST")"
@@ -160,7 +206,7 @@ install_timer_macos() {
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>$DEST/claude-guard</string>
+    <string>$DEST/claude-reserve</string>
     <string>watch</string>
   </array>
   <key>StartInterval</key><integer>90</integer>
@@ -175,20 +221,20 @@ EOF
 
 install_timer_linux() {
   mkdir -p "$SYSTEMD_DIR"
-  cat >"$SYSTEMD_DIR/claude-guard.service" <<EOF
+  cat >"$SYSTEMD_DIR/claude-reserve.service" <<EOF
 [Unit]
-Description=claude-guard usage watcher
+Description=claude-reserve usage watcher
 
 [Service]
 Type=oneshot
 # Without this, systemd kills the whole cgroup when watch exits — including any
 # session auto-resume just started in the background.
 KillMode=process
-ExecStart=/bin/bash $DEST/claude-guard watch
+ExecStart=/bin/bash $DEST/claude-reserve watch
 EOF
-  cat >"$SYSTEMD_DIR/claude-guard.timer" <<EOF
+  cat >"$SYSTEMD_DIR/claude-reserve.timer" <<EOF
 [Unit]
-Description=Run claude-guard watcher every 90 seconds
+Description=Run claude-reserve watcher every 90 seconds
 
 [Timer]
 OnBootSec=1min
@@ -199,7 +245,7 @@ AccuracySec=10s
 WantedBy=timers.target
 EOF
   systemctl --user daemon-reload 2>/dev/null
-  systemctl --user enable --now claude-guard.timer 2>/dev/null
+  systemctl --user enable --now claude-reserve.timer 2>/dev/null
 }
 
 remove_timer() {
@@ -208,8 +254,8 @@ remove_timer() {
     launchctl unload "$PLIST" >/dev/null 2>&1
     rm -f "$PLIST"
   else
-    systemctl --user disable --now claude-guard.timer >/dev/null 2>&1
-    rm -f "$SYSTEMD_DIR/claude-guard.timer" "$SYSTEMD_DIR/claude-guard.service"
+    systemctl --user disable --now claude-reserve.timer >/dev/null 2>&1
+    rm -f "$SYSTEMD_DIR/claude-reserve.timer" "$SYSTEMD_DIR/claude-reserve.service"
     systemctl --user daemon-reload >/dev/null 2>&1
   fi
   return 0
@@ -217,12 +263,19 @@ remove_timer() {
 
 # ============================================================== uninstall ====
 if [ "$MODE" = uninstall ]; then
-  echo ""; echo "Uninstalling claude-guard"; echo ""
+  echo ""; echo "Uninstalling claude-reserve"; echo ""
   run remove_timer && ok "watcher removed"
   if [ "$DRY" = 1 ]; then say "[dry-run] would remove hooks from $SETTINGS"
   else patch_settings remove "" >/dev/null && ok "hooks removed from settings.json (backup created)"; fi
-  run "rm -f '$BIN_DIR/claude-guard'" && ok "claude-guard command removed"
-  run "rm -f '$DEST/claude-guard'"    && ok "script removed"
+  if [ "$DRY" = 1 ]; then say "[dry-run] would remove our statusLine entry"
+  else
+    case "$(setup_statusline remove)" in
+      REMOVED) ok "status line entry removed" ;;
+      SKIPPED) say "  status line belongs to something else, left alone" ;;
+    esac
+  fi
+  run "rm -f '$BIN_DIR/claude-reserve'" && ok "claude-reserve command removed"
+  run "rm -f '$DEST/claude-reserve'"    && ok "script removed"
   echo ""
   say "Config, logs and cache remain in $DEST — delete them yourself if you want:"
   say "  rm -rf $DEST"
@@ -230,8 +283,42 @@ if [ "$MODE" = uninstall ]; then
   exit 0
 fi
 
+# =============================================================== migrate =====
+# Pre-1.1 the project was called claude-guard. Move the old state across rather
+# than leaving people with a stale install and a fresh empty one beside it.
+OLD_DEST="$HOME/.claude/usage-guard"
+OLD_LABEL="com.claudeguard.watch"
+migrate_from_claude_guard() {
+  [ -d "$OLD_DEST" ] || return 0
+  [ -e "$DEST" ] && return 0
+
+  # stop the old watcher first, whatever platform it was installed on
+  launchctl bootout "gui/$(id -u)/$OLD_LABEL" >/dev/null 2>&1
+  launchctl unload "$HOME/Library/LaunchAgents/$OLD_LABEL.plist" >/dev/null 2>&1
+  rm -f "$HOME/Library/LaunchAgents/$OLD_LABEL.plist"
+  systemctl --user disable --now claude-guard.timer >/dev/null 2>&1
+  rm -f "$SYSTEMD_DIR/claude-guard.timer" "$SYSTEMD_DIR/claude-guard.service"
+  systemctl --user daemon-reload >/dev/null 2>&1
+
+  mv "$OLD_DEST" "$DEST" || return 1
+  [ -f "$DEST/guard.conf" ] && mv "$DEST/guard.conf" "$DEST/reserve.conf"
+  [ -f "$DEST/guard.log" ]  && mv "$DEST/guard.log"  "$DEST/reserve.log"
+  rm -f "$DEST/claude-guard" "$BIN_DIR/claude-guard"
+  return 0
+}
+
+if [ "$DRY" != 1 ] && [ -d "$OLD_DEST" ] && [ ! -e "$DEST" ]; then
+  if migrate_from_claude_guard; then
+    ok "migrated your claude-guard install (settings kept) to $DEST"
+  else
+    warn "could not migrate $OLD_DEST — install continues with a fresh config"
+  fi
+elif [ "$DRY" = 1 ] && [ -d "$OLD_DEST" ]; then
+  say "[dry-run] would migrate $OLD_DEST to $DEST, keeping your settings"
+fi
+
 # ================================================================ install ====
-echo ""; echo "Installing claude-guard on $OS"; echo ""
+echo ""; echo "Installing claude-reserve on $OS"; echo ""
 
 [ -n "$PY" ] || die "python3 not found (macOS: xcode-select --install)"
 ok "python3: $PY"
@@ -282,27 +369,37 @@ get_file() {
   fi
 }
 
-if [ -z "$SRC" ] || [ ! -f "$SRC/bin/claude-guard" ]; then
+if [ -z "$SRC" ] || [ ! -f "$SRC/bin/claude-reserve" ]; then
   say "running from curl — fetching files from $REPO@$REF"
 fi
 
 run "mkdir -p '$DEST' '$BIN_DIR'"
 if [ "$DRY" = 1 ]; then
-  say "[dry-run] would install bin/claude-guard to $DEST/claude-guard"
+  say "[dry-run] would install bin/claude-reserve to $DEST/claude-reserve"
 else
-  get_file "bin/claude-guard" "$DEST/claude-guard"
-  head -1 "$DEST/claude-guard" | grep -q '^#!' || die "the downloaded script does not look like a shell script"
-  chmod +x "$DEST/claude-guard"
+  get_file "bin/claude-reserve" "$DEST/claude-reserve"
+  head -1 "$DEST/claude-reserve" | grep -q '^#!' || die "the downloaded script does not look like a shell script"
+  chmod +x "$DEST/claude-reserve"
 fi
 ok "script installed in $DEST"
 
 CONF_IS_NEW=0
-if [ -f "$DEST/guard.conf" ]; then
-  warn "guard.conf already exists: leaving your settings alone"
+if [ -f "$DEST/reserve.conf" ]; then
+  warn "reserve.conf already exists: leaving your settings alone"
+  # Upgrades keep whatever was configured before, which is right — but a setting
+  # that acts unattended should never be inherited silently.
+  if grep -q '^AUTO_RESUME=true' "$DEST/reserve.conf" 2>/dev/null; then
+    say ""
+    warn "auto-resume is ON in your existing config"
+    say "  When your window resets, blocked sessions relaunch on their own."
+    say "  Keeping it is fine — this is only so you know. To turn it off:"
+    say "    set AUTO_RESUME=false in $DEST/reserve.conf"
+    say ""
+  fi
 else
-  if [ "$DRY" = 1 ]; then say "[dry-run] would create $DEST/guard.conf"
-  else get_file "config/guard.conf.example" "$DEST/guard.conf"; CONF_IS_NEW=1; fi
-  ok "config created at $DEST/guard.conf"
+  if [ "$DRY" = 1 ]; then say "[dry-run] would create $DEST/reserve.conf"
+  else get_file "config/reserve.conf.example" "$DEST/reserve.conf"; CONF_IS_NEW=1; fi
+  ok "config created at $DEST/reserve.conf"
 fi
 
 # The watcher runs from launchd/systemd, which do not load your shell profile.
@@ -318,7 +415,7 @@ fi
 # Piping through curl leaves no terminal, and silence is not consent.
 if [ "$DRY" != 1 ] && [ "$CONF_IS_NEW" = 1 ]; then
   echo ""
-  say "Auto-resume: when your usage window resets, claude-guard can relaunch the"
+  say "Auto-resume: when your usage window resets, claude-reserve can relaunch the"
   say "sessions it blocked — on its own, while you are away. It spends quota and,"
   say "depending on your permission settings, may edit files. Capped at 3 sessions"
   say "and 12 hours. Details: docs/auto-resume.md"
@@ -326,18 +423,18 @@ if [ "$DRY" != 1 ] && [ "$CONF_IS_NEW" = 1 ]; then
     printf '  Enable auto-resume? [Y/n] '
     read -r ans
     case "$ans" in
-      [nN]*) set_conf AUTO_RESUME false; ok "auto-resume off — turn it on in guard.conf whenever you like" ;;
+      [nN]*) set_conf AUTO_RESUME false; ok "auto-resume off — turn it on in reserve.conf whenever you like" ;;
       *)     set_conf AUTO_RESUME true;  ok "auto-resume on" ;;
     esac
   else
     set_conf AUTO_RESUME false
     warn "no terminal to ask, so auto-resume is OFF"
-    say "  Read docs/auto-resume.md, then set AUTO_RESUME=true in guard.conf to enable it."
+    say "  Read docs/auto-resume.md, then set AUTO_RESUME=true in reserve.conf to enable it."
   fi
 fi
 
-run "ln -sf '$DEST/claude-guard' '$BIN_DIR/claude-guard'"
-ok "claude-guard command in $BIN_DIR"
+run "ln -sf '$DEST/claude-reserve' '$BIN_DIR/claude-reserve'"
+ok "claude-reserve command in $BIN_DIR"
 case ":$PATH:" in
   *":$BIN_DIR:"*) : ;;
   *) warn "$BIN_DIR is not on your PATH. Add to your shell rc:"
@@ -348,9 +445,26 @@ esac
 if [ "$DRY" = 1 ]; then
   say "[dry-run] would add PreToolUse / UserPromptSubmit / Stop hooks to $SETTINGS"
 else
-  res="$(patch_settings add "$DEST/claude-guard")"
+  res="$(patch_settings add "$DEST/claude-reserve")"
   [ "$res" = OK ] || die "$res"
   ok "hooks registered in $SETTINGS (backup .bak-* created)"
+fi
+
+# --- status line: the cheapest and most accurate usage source
+if [ "$DRY" = 1 ]; then
+  say "[dry-run] would register the status line if the slot is free"
+else
+  SL_RES="$(setup_statusline set)"
+  case "$SL_RES" in
+    SET|UPDATED)
+      ok "status line registered — usage comes straight from Claude Code, no API call" ;;
+    EXISTS:*)
+      warn "you already have a status line: leaving it alone"
+      say "  To capture usage as well, make your statusLine command:"
+      say "    $DEST/claude-reserve statusline --exec '${SL_RES#EXISTS:}'" ;;
+    *)
+      warn "could not configure the status line (the other sources still work)" ;;
+  esac
 fi
 
 # --- watcher
@@ -365,28 +479,35 @@ fi
 # --- verify
 if [ "$DRY" != 1 ]; then
   echo ""; echo "Verification"; echo ""
-  "$DEST/claude-guard" selftest | sed 's/^/  /'
+  "$DEST/claude-reserve" selftest | sed 's/^/  /'
   echo ""
-  "$DEST/claude-guard" refresh >/dev/null 2>&1
-  "$DEST/claude-guard" status | sed 's/^/  /'
+  "$DEST/claude-reserve" refresh >/dev/null 2>&1
+  "$DEST/claude-reserve" status | sed 's/^/  /'
 fi
 
-cat <<'EOF'
+AR_NOW="$(grep -m1 '^AUTO_RESUME=' "$DEST/reserve.conf" 2>/dev/null | cut -d= -f2)"
+case "$AR_NOW" in
+  true)  AR_LINE="Auto-resume is ON: when the window resets, blocked sessions relaunch
+on their own. Set AUTO_RESUME=false in reserve.conf to stop that." ;;
+  false) AR_LINE="Auto-resume is OFF: you will be notified when the window resets, and
+resume with 'claude-reserve resume --run'. See docs/auto-resume.md to enable it." ;;
+  *)     AR_LINE="Auto-resume: check AUTO_RESUME in reserve.conf, and read docs/auto-resume.md." ;;
+esac
+
+cat <<EOF
 
 ────────────────────────────────────────────────────────────────────
 Done. Restart any open Claude Code session — hooks are read at startup.
 
-  claude-guard status        usage, limits and the current decision
-  claude-guard bypass 60     disable blocking for 60 minutes
-  claude-guard pending       sessions waiting to be resumed
-  claude-guard resume        resume them now
+  claude-reserve status        usage, limits and the current decision
+  claude-reserve bypass 60     disable blocking for 60 minutes
+  claude-reserve pending       sessions waiting to be resumed
+  claude-reserve resume        resume them now
 
-AUTO_RESUME is ON by default: when the window resets, claude-guard
-relaunches the sessions it blocked, unattended. Read docs/auto-resume.md
-before leaving it on, and set AUTO_RESUME=false in guard.conf to disable.
+$AR_LINE
 
-Config: ~/.claude/usage-guard/guard.conf
-Logs:   ~/.claude/usage-guard/guard.log
+Config: $DEST/reserve.conf
+Logs:   $DEST/reserve.log
 ────────────────────────────────────────────────────────────────────
 
 EOF
