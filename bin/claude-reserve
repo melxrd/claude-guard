@@ -20,6 +20,10 @@
 #   hook-pretool        PreToolUse hook       (reads JSON on stdin)
 #   hook-prompt         UserPromptSubmit hook (reads JSON on stdin)
 #   hook-stop           Stop hook             (reads JSON on stdin)
+#   statusline [--exec CMD]
+#                       Claude Code status line: capture rate_limits and print
+#                       a usage line, or hand the JSON to your own command
+#   version | help      what you would expect
 #
 # The hooks never make a synchronous network call on the hot path: they read a
 # small shell-format cache that the watcher refreshes in the background.
@@ -28,7 +32,7 @@
 
 set -uo pipefail
 
-CLAUDE_RESERVE_VERSION="1.1.1"
+CLAUDE_RESERVE_VERSION="1.1.2"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR="${CLAUDE_RESERVE_STATE_DIR:-$HOME/.claude/claude-reserve}"
@@ -1034,6 +1038,8 @@ case "${1:-status}" in
       echo "send failed: server unreachable? see $LOG_FILE"; exit 1
     fi ;;
   version|--version|-v) echo "claude-reserve $CLAUDE_RESERVE_VERSION" ;;
-  help|--help|-h) sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//' ;;
+  # print the header block, stopping at the first non-comment line — no line
+  # numbers to keep in sync when the header grows
+  help|--help|-h) awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$0" ;;
   *) echo "unknown command: $1"; echo "try: claude-reserve help"; exit 1 ;;
 esac

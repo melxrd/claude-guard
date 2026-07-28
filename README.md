@@ -18,7 +18,7 @@ at the moment you run it. Pinning a release is the safer habit:
 ```bash
 git clone https://github.com/melxrd/claude-reserve
 cd claude-reserve
-git checkout v1.1.1        # a tag you can audit, not a moving branch
+git checkout v1.1.2        # a tag you can audit, not a moving branch
 ./install.sh --dry-run     # see exactly what it would do
 ./install.sh
 ```

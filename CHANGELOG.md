@@ -3,6 +3,15 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.2] — 2026-07-28
+
+### Fixed
+- `claude-reserve help` printed a fixed range of lines, so as the header grew it
+  spilled past the comment block into shell code. It now prints the header and
+  stops at the first non-comment line.
+- The header listed neither `statusline` — the primary usage source — nor
+  `version` and `help`.
+
 ## [1.1.1] — 2026-07-28
 
 ### Fixed
