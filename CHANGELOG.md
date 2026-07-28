@@ -3,6 +3,38 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.2] — 2026-07-28
+
+### Documented
+- `docs/menu-bar.md`: what each menu bar state means, why the plugin folder is
+  whatever SwiftBar asked for at first launch rather than a fixed path, why the
+  `.30s.` in the filename matters, and the one cause behind each of `CR ?` and
+  `CR 0%`.
+- The agent setup guide gained a menu bar step, including the trap that updating
+  the repo does not update the installed copy under `~/.claude/`.
+- `claude-reserve decision` is now listed among the commands in the README.
+
+## [1.2.1] — 2026-07-28
+
+### Fixed
+- Numbers were parsed and formatted in the user's locale. On a system where the
+  decimal separator is a comma, the menu bar plugin failed with
+  `printf: 25.0: invalid number` and showed `0%`, and threshold comparisons
+  could read `89.9` as `89`. Both now force `LC_ALL=C` on the individual awk
+  call rather than on the shell, so the environment inherited by resumed
+  sessions is untouched.
+
+## [1.2.0] — 2026-07-28
+
+### Added
+- **macOS menu bar plugin** (`extras/swiftbar/claude-reserve.30s.sh`) for
+  SwiftBar or xbar. Shows the 5-hour percentage, red with an alert icon while
+  blocking, orange while bypassed or unguarded. The dropdown carries both
+  windows with countdowns, pending resumes, the data source, and one-click
+  bypass, resume and refresh.
+- `claude-reserve decision` prints just the ALLOW/BLOCK line, so integrations do
+  not have to scrape `status`.
+
 ## [1.1.3] — 2026-07-28
 
 Fixes from a third external audit.

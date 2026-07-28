@@ -18,7 +18,7 @@ at the moment you run it. Pinning a release is the safer habit:
 ```bash
 git clone https://github.com/melxrd/claude-reserve
 cd claude-reserve
-git checkout v1.1.3        # a tag you can audit, not a moving branch
+git checkout v1.2.2        # a tag you can audit, not a moving branch
 ./install.sh --dry-run     # see exactly what it would do
 ./install.sh
 ```
@@ -81,6 +81,7 @@ claude-reserve unbypass       # re-arm
 claude-reserve pending        # sessions waiting to resume
 claude-reserve resume --run   # resume them
 claude-reserve selftest       # re-run the policy tests
+claude-reserve decision       # just the ALLOW/BLOCK line, for scripts
 ```
 
 Config lives in `~/.claude/claude-reserve/reserve.conf` and applies immediately — no
@@ -206,12 +207,34 @@ resume queue, window-reset detection, source priority, timeouts, notification
 throttling, and behaviour when every source is down. No network, no effect on real state. CI runs them on
 macOS and Ubuntu.
 
+## Menu bar (macOS)
+
+```
+CR 42%      normal        CR 93% ⛔   blocking
+CR 78%      past 75%      CR 42% ⊖   bypass active
+```
+
+`extras/swiftbar/claude-reserve.30s.sh` shows the 5-hour window in the menu bar
+and puts both countdowns, pending resumes and one-click bypass/resume in the
+dropdown. Works with [SwiftBar](https://swiftbar.app) or
+[xbar](https://xbarapp.com):
+
+```bash
+brew install --cask swiftbar && open -a SwiftBar   # pick a plugin folder
+cp extras/swiftbar/claude-reserve.30s.sh <that-folder>/
+chmod +x <that-folder>/claude-reserve.30s.sh
+```
+
+Then SwiftBar → *Refresh all*. Keep the `.30s.` in the name: it is the refresh
+interval. Full setup and troubleshooting in [docs/menu-bar.md](docs/menu-bar.md).
+
 ## Docs
 
 - [Configuration](docs/configuration.md) — every setting
 - [Data sources](docs/data-sources.md) — where the percentages come from
 - [Auto-resume](docs/auto-resume.md) — what an unattended restart means
 - [Notifications](docs/notifications.md) — desktop, phone, and the iOS gotchas
+- [Menu bar](docs/menu-bar.md) — the macOS plugin, and what each state means
 - [Troubleshooting](docs/troubleshooting.md) — wrong blocks, and missing ones
 - [Security](SECURITY.md) — what it reads, what it runs, how to pin a release
 

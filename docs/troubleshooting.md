@@ -86,6 +86,11 @@ keeping notifications. Applies immediately.
 
 See [notifications.md](notifications.md).
 
+## Menu bar
+
+See [menu-bar.md](menu-bar.md) — `CR ?` and `CR 0%` each have one specific
+cause.
+
 ## My prompt disappeared
 
 Blocked prompts are appended to `~/.claude/claude-reserve/blocked-prompts.log` with

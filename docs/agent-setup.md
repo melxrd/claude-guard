@@ -131,7 +131,36 @@ delivers to the app, no banner — retest closed and locked), or it never
 registered for push (reinstall, allow notifications **before** subscribing).
 Reviewing notification settings will not help; they are already correct.
 
-## 6. Prove it, then hand over
+## 6. Menu bar (macOS, optional)
+
+Only if they want usage visible outside the terminal. It is a plugin for
+[SwiftBar](https://swiftbar.app) or xbar, not an app of ours:
+
+```bash
+brew install --cask swiftbar && open -a SwiftBar
+```
+
+**SwiftBar asks for a plugin folder on first launch — ask them which one they
+picked**, do not assume the default. Then:
+
+```bash
+cp extras/swiftbar/claude-reserve.30s.sh <their-folder>/
+chmod +x <their-folder>/claude-reserve.30s.sh
+```
+
+Verify before touching the menu bar — the plugin just prints text:
+
+```bash
+./extras/swiftbar/claude-reserve.30s.sh | head -1
+```
+
+`CR 42%` is right. `CR ?` means claude-reserve is not installed or not on PATH.
+`CR 0%` means the installed copy predates 1.2.1 — re-run `./install.sh`, since
+updating the repo does not update `~/.claude/claude-reserve/`.
+
+See [menu-bar.md](menu-bar.md).
+
+## 7. Prove it, then hand over
 
 ```bash
 claude-reserve status                      # note the 5h percentage
