@@ -18,7 +18,7 @@ at the moment you run it. Pinning a release is the safer habit:
 ```bash
 git clone https://github.com/melxrd/claude-reserve
 cd claude-reserve
-git checkout v1.1.2        # a tag you can audit, not a moving branch
+git checkout v1.1.3        # a tag you can audit, not a moving branch
 ./install.sh --dry-run     # see exactly what it would do
 ./install.sh
 ```
@@ -200,7 +200,7 @@ resume.
 ./tests/run-tests.sh
 ```
 
-34 checks: the policy table (thresholds, grace, fail-open, fail-closed, bypass
+37 checks: the policy table (thresholds, grace, fail-open, fail-closed, bypass
 expiry) plus integration tests against fake usage and push servers — blocking,
 resume queue, window-reset detection, source priority, timeouts, notification
 throttling, and behaviour when every source is down. No network, no effect on real state. CI runs them on

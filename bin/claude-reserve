@@ -32,7 +32,7 @@
 
 set -uo pipefail
 
-CLAUDE_RESERVE_VERSION="1.1.2"
+CLAUDE_RESERVE_VERSION="1.1.3"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR="${CLAUDE_RESERVE_STATE_DIR:-$HOME/.claude/claude-reserve}"
@@ -66,7 +66,8 @@ NTFY_PRIORITY=default
 
 # Resume after the window resets
 RESUME_NOTIFY=true          # tell me when the window resets and work is pending
-AUTO_RESUME=true            # relaunch Claude Code automatically on reset (see docs/auto-resume.md)
+AUTO_RESUME=false           # opt-in: the installer asks and writes your answer
+                            # into reserve.conf. See docs/auto-resume.md.
 AUTO_RESUME_MAX=3           # never relaunch more than this many sessions at once
 AUTO_RESUME_MAX_AGE_H=12    # ignore blocked sessions older than this
 AUTO_RESUME_PROMPT="Continue where you left off."
@@ -139,7 +140,10 @@ file_mtime() {
     m="$(stat -c %Y "$1" 2>/dev/null)"
   fi
   case "$m" in
-    ''|*[!0-9]*) now ;;
+    # Fall back to the epoch, not to now: an unreadable mtime must make things
+    # look old (stale lock gets cleared, stale capture gets ignored) rather
+    # than eternally fresh.
+    ''|*[!0-9]*) echo 0 ;;
     *) printf '%s\n' "$m" ;;
   esac
 }
@@ -179,6 +183,9 @@ run_limited() {
   local pid=$!
   while kill -0 "$pid" 2>/dev/null; do
     if [ "$n" -ge "$max" ]; then
+      # Direct children only: macOS ships no setsid, so there is no portable
+      # process-group kill here. A grandchild can outlive the timeout, but it
+      # cannot hang us — output goes to a file, never to our pipe.
       pkill -9 -P "$pid" 2>/dev/null
       kill -9 "$pid" 2>/dev/null
       wait "$pid" 2>/dev/null
@@ -638,6 +645,9 @@ alert_throttled() {
 # When a session is blocked we record enough to offer a resume later: the
 # working directory, when it happened, and why.
 
+# Deliberately not python: this runs on every hook invocation, and a ~40ms
+# interpreter start on the hot path costs more than it buys. Only ever used for
+# session_id, which is then passed through safe_id().
 json_field() { # json_field <payload> <key>  (flat string fields only)
   printf '%s' "$1" | tr ',' '\n' | grep -o "\"$2\"[^,}]*" | head -1 | sed 's/.*: *"//;s/"$//'
 }

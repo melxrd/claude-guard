@@ -3,6 +3,36 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.3] — 2026-07-28
+
+Fixes from a third external audit.
+
+### Fixed
+- `AUTO_RESUME` defaulted to `true` in the script while the installer and the
+  shipped config set `false`. Running `bin/claude-reserve` from a clone with no
+  config therefore had auto-resume on, contradicting the opt-in principle
+  stated everywhere else. The script default is now `false`; the installer
+  writes `true` when you say yes at the prompt.
+- `file_mtime` fell back to the current time when `stat` failed, which would
+  make a stale lock look eternally fresh and block refreshes forever. It now
+  falls back to the epoch, so an unreadable timestamp makes things look old.
+
+### Added
+- A test asserting the script default, the shipped config and the installer all
+  agree that auto-resume is off until asked. That is the exact invariant that
+  drifted apart unnoticed.
+
+### Documented
+- `SECURITY.md` now states that ntfy topics are world-readable to anyone who
+  guesses them, and that notifications carry usage percentages and project
+  directory names.
+- The portable timeout kills direct children only — macOS has no `setsid`, so
+  there is no portable process-group kill. A grandchild can outlive the
+  timeout but cannot hang the refresh, because output goes to a file rather
+  than a pipe. Noted in the code.
+- Why hook JSON parsing uses `grep`/`sed` rather than python: it runs on every
+  hook call, and an interpreter start on the hot path costs more than it buys.
+
 ## [1.1.2] — 2026-07-28
 
 ### Fixed

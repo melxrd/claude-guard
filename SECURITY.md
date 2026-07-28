@@ -26,6 +26,13 @@ left out.
 on stdin, not on the command line, because arguments are readable by any local
 user.
 
+**ntfy topics are public.** If you enable phone push, anyone who guesses your
+topic name can read the notifications — which carry usage percentages and the
+directory name of the project you were working in. That is the trade ntfy makes
+in exchange for needing no account. Use a long random topic (the docs generate
+one), treat it as a password, and leave `NTFY_TOPIC` empty if that is not a
+trade you want.
+
 **State directory is `chmod 700`.** `~/.claude/claude-reserve/` holds usage
 percentages, blocked prompts and working directory paths. Not credentials, but
 not for other accounts on the machine either.
@@ -54,13 +61,13 @@ whatever is there at that moment.
 
 ```bash
 git clone https://github.com/melxrd/claude-reserve
-cd claude-reserve && git checkout v1.1.2
+cd claude-reserve && git checkout v1.1.3
 ./install.sh --dry-run
 ./install.sh
 ```
 
 **Read the diff before upgrading.** For a tool with read access to your
-credentials, `git diff v1.1.2..v1.1.3` is a reasonable habit.
+credentials, `git diff v1.1.3..v1.1.4` is a reasonable habit.
 
 **Verify what you install.** Everything lives in one file. `shellcheck
 bin/claude-reserve` and `./tests/run-tests.sh` both run offline and take seconds.

@@ -367,6 +367,17 @@ out="$(sl_payload 93.0 | g statusline)"
 contains "line flags a block" "[BLOCKED]" "$out"
 conf 'SESSION_THRESHOLD=90'
 
+section "15. opt-in defaults do not drift apart"
+# The script default, the shipped config and the installer must agree that
+# auto-resume is off until somebody says otherwise. They silently disagreed
+# once: running from a clone with no config had it on.
+sd="$(grep -m1 '^AUTO_RESUME=' "$ROOT/bin/claude-reserve" | cut -d= -f2 | awk '{print $1}')"
+ce="$(grep -m1 '^AUTO_RESUME=' "$ROOT/config/reserve.conf.example" | cut -d= -f2 | awk '{print $1}')"
+check "script default is off"        "false" "$sd"
+check "shipped config agrees"        "false" "$ce"
+check "installer turns it on only after asking" 1 \
+      "$(grep -c 'set_conf AUTO_RESUME true' "$ROOT/install.sh")"
+
 # ================================================================ summary ====
 printf '\n\033[1m%s passed, %s failed\033[0m\n\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
