@@ -99,7 +99,18 @@ AGE="-"
 echo "source: $SOURCE ($AGE)${PLAN:+ · $PLAN} | size=11 color=gray"
 
 echo "---"
-echo "Bypass for 30 min | bash=$BIN param1=bypass param2=30 terminal=false refresh=true"
-echo "Clear bypass | bash=$BIN param1=unbypass terminal=false refresh=true"
-echo "Resume pending work | bash=$BIN param1=resume param2=--run terminal=false refresh=true"
-echo "Refresh now | bash=$BIN param1=refresh terminal=false refresh=true"
+# Every action goes through `menu`, which turns the command's own answer into a
+# notification: the host runs clicks with output discarded, so without this a
+# click that did nothing and a click that did something look the same.
+echo "Bypass for 30 min | bash=$BIN param1=menu param2=bypass param3=30 terminal=false refresh=true"
+echo "Clear bypass | bash=$BIN param1=menu param2=unbypass terminal=false refresh=true"
+if [ "$PENDING" -gt 0 ]; then
+  # --terminal: you are at the Mac when you click this, so the session opens in
+  # front of you rather than running headless into a log file.
+  echo "Resume $PENDING session(s) in a terminal | bash=$BIN param1=menu param2=resume param3=--run param4=--terminal terminal=false refresh=true"
+else
+  # Not clickable on purpose: an enabled item that silently does nothing reads
+  # as a broken plugin.
+  echo "Nothing to resume | color=gray"
+fi
+echo "Refresh now | bash=$BIN param1=menu param2=refresh terminal=false refresh=true"

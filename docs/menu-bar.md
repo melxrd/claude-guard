@@ -15,6 +15,19 @@ The dropdown carries both windows with countdowns, sessions waiting to resume,
 the data source and its age, and four actions: bypass 30 minutes, clear bypass,
 resume pending work, refresh now.
 
+**Resume opens a real session.** The menu bar item runs `resume --run
+--terminal`, which opens a terminal window with `claude --continue` in the
+blocked directory — you clicked it, so you are there to see it. The watcher's
+own automatic resume stays headless. See
+[auto-resume.md](auto-resume.md#headless-or-in-front-of-you).
+
+**Every action answers back.** The host runs a click with its output discarded,
+so each action goes through `claude-reserve menu`, which turns the command's own
+reply into a notification — "Bypass active for 30 minutes", "resuming:
+/path/to/project". The resume item is only clickable when something is actually
+queued; with an empty queue it reads *Nothing to resume* in grey, because an
+enabled item that does nothing is indistinguishable from a broken plugin.
+
 It reads the same cache the hooks read — no extra network calls, no second
 source of truth.
 
@@ -66,6 +79,17 @@ older than 1.2.1 in `~/.claude/claude-reserve/`. Before 1.2.1 the percentage was
 formatted with the shell's locale, so on a system using a comma as decimal
 separator `25.0` was rejected. Re-run `./install.sh`; updating the repo alone
 does not update the installed copy.
+
+**Updating the repo does not update this.** The plugin runs from the copy in
+SwiftBar's folder, against the binary in `~/.claude/claude-reserve/` — neither is
+your working tree. After a `git pull`: `./install.sh`, copy the plugin again,
+*Refresh all*.
+
+**A click seems to do nothing** — if the item was *Nothing to resume* in grey,
+that is the answer: no session was ever blocked, so there is nothing queued.
+`claude-reserve pending` says the same thing in words. If a real action produces
+no notification either, the installed copy predates 1.2.4 — actions were silent
+by construction there. Re-run `./install.sh` and re-copy the plugin.
 
 **Numbers that lag** — the plugin reads the cache, which the watcher refreshes
 every 90 seconds. *Refresh now* in the dropdown forces it.

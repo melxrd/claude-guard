@@ -11,9 +11,14 @@
 #   refresh             force a usage cache refresh
 #   watch               one watcher tick (alerts + reset detection); run by the timer
 #   pending             list sessions that were blocked and can be resumed
-#   resume [--run]      show (or execute) the resume commands for pending sessions
+#   resume [--run] [--terminal]
+#                       show (or execute) the resume commands for pending
+#                       sessions; --terminal opens a real interactive session
+#                       in a terminal window instead of a headless run
 #   bypass [minutes]    disable blocking for N minutes (default 60)
 #   unbypass            re-enable blocking now
+#   menu <cmd> [args]   run a subcommand and show its answer as a notification,
+#                       for menu bar clicks whose output nobody would ever see
 #   selftest            run the policy test suite with synthetic data
 #   notify-test         send a test desktop notification
 #   ntfy-test           send a test push via ntfy
@@ -33,7 +38,7 @@
 
 set -uo pipefail
 
-CLAUDE_RESERVE_VERSION="1.2.3"
+CLAUDE_RESERVE_VERSION="1.2.6"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR="${CLAUDE_RESERVE_STATE_DIR:-$HOME/.claude/claude-reserve}"
@@ -74,6 +79,11 @@ AUTO_RESUME_MAX_AGE_H=12    # ignore blocked sessions older than this
 AUTO_RESUME_PROMPT="Continue where you left off."
 AUTO_RESUME_ARGS=""         # e.g. "--permission-mode acceptEdits"
 CLAUDE_BIN=claude
+# Where an interactive resume (--terminal) opens. RESUME_TERMINAL_CMD wins when
+# set: it receives the shell command as its last argument, which is the escape
+# hatch for tmux, iTerm, Warp or anything else.
+RESUME_TERMINAL_APP=Terminal
+RESUME_TERMINAL_CMD=""
 
 # Data sources
 # Claude Code hands the status line a JSON blob containing rate_limits after
@@ -731,11 +741,63 @@ resume_cmd() { # resume_cmd <cwd>
     "$1" "$CLAUDE_BIN" "$AUTO_RESUME_ARGS" "$AUTO_RESUME_PROMPT"
 }
 
+# The interactive twin: no -p, so the session lands in front of you instead of
+# running headless. AUTO_RESUME_ARGS is left out on purpose — a pre-granted
+# permission mode is for unattended runs, and you are right here.
+resume_cmd_interactive() { # resume_cmd_interactive <cwd>
+  printf 'cd %q && %s --continue' "$1" "$CLAUDE_BIN"
+}
+
+# open_terminal <cwd> — start an interactive resume in a terminal window.
+# Prints what happened; returns non-zero if nothing could be opened, so the
+# caller can keep the pending record instead of losing it.
+open_terminal() {
+  local dir="$1" cmd; cmd="$(resume_cmd_interactive "$dir")"
+
+  if [ -n "$RESUME_TERMINAL_CMD" ]; then
+    # Deliberately unquoted: the value is a command line ("tmux new-window"),
+    # not a single program name.
+    # shellcheck disable=SC2086
+    $RESUME_TERMINAL_CMD "$cmd" >/dev/null 2>&1 \
+      && { echo "opened via RESUME_TERMINAL_CMD: $dir"; return 0; }
+    echo "RESUME_TERMINAL_CMD failed for $dir" >&2; return 1
+  fi
+
+  if [ "$OS" = macos ]; then
+    # AppleScript, so the command actually runs. The first attempt raises the
+    # "wants to control Terminal" prompt; a refusal is a failure, not a hang,
+    # and falls through to just opening the folder.
+    if osascript -e "tell application \"$RESUME_TERMINAL_APP\" to activate" \
+                 -e "tell application \"$RESUME_TERMINAL_APP\" to do script \"$cmd\"" \
+                 >/dev/null 2>&1; then
+      echo "opened a $RESUME_TERMINAL_APP window: $dir"; return 0
+    fi
+    if open -a "$RESUME_TERMINAL_APP" "$dir" >/dev/null 2>&1; then
+      echo "opened $RESUME_TERMINAL_APP at $dir - automation was refused, so run: claude --continue"
+      return 0
+    fi
+    echo "could not open $RESUME_TERMINAL_APP for $dir" >&2; return 1
+  fi
+
+  local t
+  for t in ${TERMINAL:-} x-terminal-emulator gnome-terminal konsole xfce4-terminal xterm; do
+    command -v "$t" >/dev/null 2>&1 || continue
+    "$t" -e bash -lc "$cmd; exec bash" >/dev/null 2>&1 &
+    echo "opened $t: $dir"; return 0
+  done
+  echo "no terminal emulator found for $dir" >&2; return 1
+}
+
 # do_resume [--run]
 do_resume() {
   prune_pending
-  local run=0
-  [ "${1:-}" = "--run" ] && run=1
+  local run=0 in_terminal=0 a
+  for a in "$@"; do
+    case "$a" in
+      --run)      run=1 ;;
+      --terminal) in_terminal=1 ;;
+    esac
+  done
   local n; n="$(pending_count)"
   if [ "$n" -eq 0 ]; then echo "Nothing to resume."; return 0; fi
 
@@ -754,8 +816,21 @@ do_resume() {
     # shellcheck disable=SC1090,SC2034
     . "$f" 2>/dev/null
     [ -d "$CWD" ] || { rm -f "$f"; continue; }
-    local cmd; cmd="$(resume_cmd "$CWD")"
-    if [ "$run" -eq 1 ]; then
+    local cmd
+    if [ "$in_terminal" -eq 1 ]; then cmd="$(resume_cmd_interactive "$CWD")"
+    else                              cmd="$(resume_cmd "$CWD")"; fi
+    if [ "$run" -eq 1 ] && [ "$in_terminal" -eq 1 ]; then
+      local msg
+      if msg="$(open_terminal "$CWD" 2>&1)"; then
+        echo "$msg"; log "resume (terminal): $CWD"; rm -f "$f"
+      else
+        # Keep the record: an unopened session is still waiting, and silently
+        # dropping it is how work disappears.
+        echo "could not open a terminal, session left in the queue: $CWD" >&2
+        echo "  run it yourself: $cmd" >&2
+        log "resume FAILED (terminal): $CWD - $msg"
+      fi
+    elif [ "$run" -eq 1 ]; then
       echo "resuming: $CWD"
       log "resume: $CWD"
       # Detach: the watcher runs as a systemd oneshot unit, and when it exits
@@ -771,7 +846,15 @@ do_resume() {
       echo "$cmd"
     fi
   done
-  [ "$run" -eq 0 ] && echo "" && echo "Re-run with --run to execute these."
+  if [ "$run" -eq 0 ]; then
+    echo ""
+    if [ "$in_terminal" -eq 1 ]; then
+      echo "Re-run with --run --terminal to open these in a terminal window."
+    else
+      echo "Re-run with --run to execute these headlessly, or add --terminal to"
+      echo "open each one in a terminal window instead."
+    fi
+  fi
   return 0
 }
 
@@ -1007,6 +1090,20 @@ do_bypass() {
 
 do_unbypass() { rm -f "$BYPASS_FILE"; log "BYPASS cleared"; echo "Bypass cleared, guard is active again."; }
 
+# menu <subcommand> [args...] — the menu bar host runs a click with its output
+# discarded, so "it did nothing" and "it did nothing visible" look identical.
+# This runs the subcommand and puts its own answer in a notification.
+do_menu() {
+  if [ "$#" -eq 0 ]; then echo "usage: claude-reserve menu <subcommand> [args]" >&2; return 2; fi
+  local out rc
+  out="$("$0" "$@" 2>&1)"; rc=$?
+  [ -z "$out" ] && out="$1: nothing to report"
+  # First three lines only: a notification body is not a terminal.
+  notify "claude-reserve" "$(printf '%s' "$out" | head -3 | tr '\n' ' ')"
+  printf '%s\n' "$out"
+  return "$rc"
+}
+
 # =============================================================== selftest ====
 do_selftest() {
   local fails=0
@@ -1077,7 +1174,7 @@ case "${1:-status}" in
   refresh)      do_refresh force && echo "cache updated" || { echo "refresh failed (see $LOG_FILE)"; exit 1; } ;;
   watch)        do_watch ;;
   pending)      do_pending ;;
-  resume)       do_resume "${2:-}" ;;
+  resume)       shift; do_resume "$@" ;;
   bypass)       do_bypass "${2:-60}" ;;
   unbypass)     do_unbypass ;;
   selftest)     do_selftest ;;
@@ -1086,6 +1183,7 @@ case "${1:-status}" in
   hook-stop)    hook_stop ;;
   statusline)   shift; do_statusline "$@" ;;
   decision)     load_usage yes; decide ;;
+  menu)         shift; do_menu "$@" ;;
   notify-test)  notify "claude-reserve" "If you can see this, desktop notifications work."; echo "sent" ;;
   ntfy-test)
     if [ -z "${NTFY_TOPIC:-}" ]; then

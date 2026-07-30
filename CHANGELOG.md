@@ -3,6 +3,58 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.6] — 2026-07-30
+
+### Documented
+Everything below came out of one debugging session where the code was fine and
+the documentation was not.
+
+- **Upgrading is two commands.** `git pull` updates neither the installed binary
+  nor the copied menu bar plugin, and an old binary ignores a new flag in
+  silence — so a fix appears not to work. README, troubleshooting and the agent
+  guide now say to check the installed version first.
+- **What is running right now**: reading `ps` output to tell a headless resume
+  from an interactive session, finding a process's working directory, following
+  `resume.log`, and stopping only the headless ones with
+  `pkill -f "claude --continue -p"`.
+- **"Resume does nothing" usually means it worked**, invisibly — the section now
+  starts there, then covers the empty queue, Cowork's missing hooks, and macOS
+  refusing a caller permission to control Terminal.
+- **An empty `NTFY_TOPIC` disables push silently.** A fresh install ships one,
+  and reinstalling does not carry the old topic across.
+
+## [1.2.5] — 2026-07-29
+
+### Added
+- **`resume --run --terminal`** — opens each queued session in a terminal
+  window running an interactive `claude --continue`, instead of the headless
+  relaunch. The headless form was working correctly and invisibly, which reads
+  as "the button does nothing"; the watcher still uses it, because at window
+  reset nobody is watching. The menu bar item now uses `--terminal`.
+- `RESUME_TERMINAL_APP` (macOS app to open, default `Terminal`) and
+  `RESUME_TERMINAL_CMD` (overrides everything, receives the command as its last
+  argument — for tmux, iTerm, Warp).
+
+### Fixed
+- A resume that cannot open a terminal keeps its pending record instead of
+  deleting it, and prints the command to run by hand. Losing the queue entry
+  because a window failed to open would lose the work.
+
+## [1.2.4] — 2026-07-29
+
+### Fixed
+- **Menu bar actions were silent.** The host runs a click with its output
+  discarded, so *Resume pending work* on an empty queue looked identical to a
+  broken plugin — which is how it was reported. Actions now run through the new
+  `claude-reserve menu` subcommand, which turns the command's own reply into a
+  notification, and the resume item is only clickable when something is queued
+  (otherwise a grey *Nothing to resume*).
+
+### Added
+- `claude-reserve menu <subcommand> [args]` — runs a subcommand and shows its
+  first lines as a desktop notification. Meant for menu bar clicks; harmless
+  anywhere else.
+
 ## [1.2.3] — 2026-07-28
 
 Fixes from a fourth external audit, which found no security issue and five

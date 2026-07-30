@@ -435,6 +435,63 @@ check "installer runs commands, never eval" 0 \
 check "config dir hashed from an argument"  1 \
       "$(grep -c 'sha256(sys.argv\[1\]' "$ROOT/bin/claude-reserve")"
 
+section "19. the menu bar never offers a click that does nothing"
+# A click that silently does nothing is indistinguishable from a broken plugin,
+# which is exactly how this was reported.
+PLUGIN="$ROOT/extras/swiftbar/claude-reserve.30s.sh"
+rm -f "$CLAUDE_RESERVE_STATE_DIR"/pending/*
+out="$(PATH="$(dirname "$GUARD"):$PATH" "$PLUGIN" 2>/dev/null)"
+contains "empty queue shows a disabled item" "Nothing to resume | color=gray" "$out"
+check    "empty queue offers no resume action" 0 \
+         "$(printf '%s\n' "$out" | grep -c 'param2=resume')"
+printf 'CWD=%q\nBLOCKED_AT=%s\nREASON=x\n' "$TMP" "$("$GUARD" version >/dev/null; date +%s)" \
+  >"$CLAUDE_RESERVE_STATE_DIR/pending/s99"
+out="$(PATH="$(dirname "$GUARD"):$PATH" "$PLUGIN" 2>/dev/null)"
+contains "a queued session is offered by count" "Resume 1 session(s) in a terminal" "$out"
+contains "the click asks for a visible session"  "param3=--run param4=--terminal" "$out"
+contains "and runs through menu"               "param1=menu param2=resume" "$out"
+check    "every action is wrapped in menu" 0 \
+         "$(printf '%s\n' "$out" | grep -c 'param1=\(bypass\|unbypass\|resume\|refresh\)')"
+# menu itself: the point is that the answer comes back, not just an exit code.
+out="$("$GUARD" menu pending 2>&1)"
+contains "menu relays the subcommand's answer" "session(s) blocked and resumable" "$out"
+rm -f "$CLAUDE_RESERVE_STATE_DIR"/pending/*
+
+section "20. an interactive resume opens a session instead of a log file"
+# The headless resume works but is invisible, which reads as "nothing happened".
+# RESUME_TERMINAL_CMD is both the escape hatch for tmux/iTerm and what makes
+# this testable without a window server.
+cat >"$TMP/fake-term" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$1" >>"$TMP/term.log"
+EOF
+chmod +x "$TMP/fake-term"
+: >"$TMP/term.log"
+conf "RESUME_TERMINAL_CMD=$TMP/fake-term" 'CLAUDE_BIN=/usr/bin/true'
+printf 'CWD=%q\nBLOCKED_AT=%s\nREASON=x\n' "$TMP" "$(date +%s)" \
+  >"$CLAUDE_RESERVE_STATE_DIR/pending/s77"
+out="$("$GUARD" resume --run --terminal 2>&1)"
+contains "reports the window it opened" "opened via RESUME_TERMINAL_CMD" "$out"
+contains "hands over an interactive command" "--continue" "$(cat "$TMP/term.log")"
+check    "and not a headless one" 0 \
+         "$(grep -c -- '-p ' "$TMP/term.log")"
+check    "the record is consumed once opened" "No sessions waiting to resume." \
+         "$("$GUARD" pending)"
+
+# A terminal that refuses to open must not swallow the queued session.
+cat >"$TMP/fake-term" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+printf 'CWD=%q\nBLOCKED_AT=%s\nREASON=x\n' "$TMP" "$(date +%s)" \
+  >"$CLAUDE_RESERVE_STATE_DIR/pending/s78"
+out="$("$GUARD" resume --run --terminal 2>&1)"
+contains "a failed open says so"          "could not open a terminal" "$out"
+contains "and prints the manual command"  "--continue" "$out"
+contains "the session stays in the queue" "1 session(s) blocked and resumable" "$("$GUARD" pending)"
+rm -f "$CLAUDE_RESERVE_STATE_DIR"/pending/*
+conf 'RESUME_TERMINAL_CMD=""'
+
 # ================================================================ summary ====
 printf '\n\033[1m%s passed, %s failed\033[0m\n\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

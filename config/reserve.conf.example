@@ -73,6 +73,13 @@ AUTO_RESUME_PROMPT="Continue where you left off."
 # Extra flags for the relaunch. A headless run stalls on permission prompts, so
 # if your work needs file edits, set a permission mode here.
 AUTO_RESUME_ARGS=""
+# `claude-reserve resume --run --terminal` (and the menu bar item) opens a real
+# interactive session instead of a headless one. RESUME_TERMINAL_APP is the
+# macOS app to open; RESUME_TERMINAL_CMD overrides everything and receives the
+# shell command as its last argument — use it for tmux, iTerm, Warp:
+#   RESUME_TERMINAL_CMD="tmux new-window"
+RESUME_TERMINAL_APP=Terminal
+RESUME_TERMINAL_CMD=""
 # Absolute path, filled in by the installer. launchd and systemd do not load
 # your shell profile, so a bare "claude" often is not found from the watcher.
 CLAUDE_BIN=claude

@@ -3,9 +3,6 @@
 *Written for an AI assistant doing the setup. You do not need to read the
 source: run the commands, read the output, say the "**Say:**" lines.*
 
-*Setting this up for someone? Follow this — you do not need to read the source.
-Run the commands, read the output, say the "**Say:**" lines.*
-
 **Goal:** installed, reading real usage, thresholds matching how they work, and
 the user knows the one command that unblocks them.
 
@@ -157,6 +154,17 @@ Verify before touching the menu bar — the plugin just prints text:
 `CR 42%` is right. `CR ?` means claude-reserve is not installed or not on PATH.
 `CR 0%` means the installed copy predates 1.2.1 — re-run `./install.sh`, since
 updating the repo does not update `~/.claude/claude-reserve/`.
+
+Tell them the dropdown actions reply with a notification, and that *Nothing to
+resume* in grey is an answer, not a dead button: it means no session was ever
+blocked. Resume from the menu bar opens a terminal window; the watcher's own
+automatic resume is headless and lands in `resume.log`.
+
+**If they ever report that a fix "did nothing", check the installed version
+before anything else** — `grep -m1 CLAUDE_RESERVE_VERSION=
+~/.claude/claude-reserve/claude-reserve`. Updating the repo updates neither the
+installed binary nor the copied plugin, and an old binary ignores new flags
+without complaining.
 
 See [menu-bar.md](menu-bar.md).
 

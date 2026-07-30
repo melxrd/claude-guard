@@ -18,7 +18,7 @@ at the moment you run it. Pinning a release is the safer habit:
 ```bash
 git clone https://github.com/melxrd/claude-reserve
 cd claude-reserve
-git checkout v1.2.3        # a tag you can audit, not a moving branch
+git checkout v1.2.6        # a tag you can audit, not a moving branch
 ./install.sh --dry-run     # see exactly what it would do
 ./install.sh
 ```
@@ -101,6 +101,20 @@ state across, removes the old watcher and hooks, and keeps every setting.
 **Requires:** bash, `curl`, `python3`. Optional: `terminal-notifier` (macOS),
 `libnotify-bin` (Linux).
 
+**Upgrading is two commands, not one.** `git pull` updates the repo; the guard
+runs from `~/.claude/claude-reserve/` and the menu bar from SwiftBar's plugin
+folder:
+
+```bash
+./install.sh
+cp extras/swiftbar/claude-reserve.30s.sh <your-plugin-folder>/
+```
+
+Then restart open Claude Code sessions — hooks load at startup. Verify with
+`grep -m1 CLAUDE_RESERVE_VERSION= ~/.claude/claude-reserve/claude-reserve`: an
+old installed copy silently ignores new flags, which is indistinguishable from a
+bug.
+
 ## Resuming after a reset
 
 Blocked sessions record their working directory. When the window rolls over,
@@ -109,6 +123,10 @@ claude-reserve runs:
 ```bash
 cd <blocked directory> && claude --continue -p "Continue where you left off."
 ```
+
+That form is headless — right for a reset that happens while you are away, and
+invisible by design. When you resume by hand (or from the menu bar), add
+`--terminal` and the session opens in a terminal window instead.
 
 **The installer asks before enabling this.** An agent restarting while you are
 away spends quota and may edit files, so it is a question rather than a default.
@@ -201,11 +219,11 @@ resume.
 ./tests/run-tests.sh
 ```
 
-49 checks: the policy table (thresholds, grace, fail-open, fail-closed, bypass
+63 checks: the policy table (thresholds, grace, fail-open, fail-closed, bypass
 expiry) plus integration tests against fake usage and push servers — blocking,
 resume queue, window-reset detection, source priority, timeouts, notification
-throttling, input validation, the https-only rule for the token, and behaviour
-when every source is down. No network, no effect on real state. CI runs them on
+throttling, input validation, the https-only rule for the token, the menu bar's
+own output, interactive resume, and behaviour when every source is down. No network, no effect on real state. CI runs them on
 macOS and Ubuntu.
 
 ## Menu bar (macOS)
@@ -227,7 +245,9 @@ chmod +x <that-folder>/claude-reserve.30s.sh
 ```
 
 Then SwiftBar → *Refresh all*. Keep the `.30s.` in the name: it is the refresh
-interval. Full setup and troubleshooting in [docs/menu-bar.md](docs/menu-bar.md).
+interval. Actions in the dropdown reply with a notification, and the resume item
+is greyed out when nothing is queued. Full setup and troubleshooting in
+[docs/menu-bar.md](docs/menu-bar.md).
 
 ## Docs
 

@@ -69,13 +69,13 @@ whatever is there at that moment.
 
 ```bash
 git clone https://github.com/melxrd/claude-reserve
-cd claude-reserve && git checkout v1.2.3
+cd claude-reserve && git checkout v1.2.6
 ./install.sh --dry-run
 ./install.sh
 ```
 
 **Read the diff before upgrading.** For a tool with read access to your
-credentials, `git diff v1.2.3..v1.2.4` is a reasonable habit.
+credentials, `git diff v1.2.6..v1.2.7` is a reasonable habit.
 
 **Verify what you install.** Everything lives in one file. `shellcheck
 bin/claude-reserve` and `./tests/run-tests.sh` both run offline and take seconds.

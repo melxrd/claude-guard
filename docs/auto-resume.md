@@ -43,9 +43,48 @@ AUTO_RESUME_ARGS="--permission-mode acceptEdits"
 
 Know what that grants before setting it.
 
-**It resumes the directory, not your terminal.** The relaunch is a new headless
-process; your original blocked session is still open. Close it or continue it
-yourself — two processes in one directory can conflict.
+**It resumes the directory, not your terminal.** The unattended relaunch is a
+new headless process; your original blocked session is still open. Close it or
+continue it yourself — two processes in one directory can conflict.
+
+## Headless or in front of you
+
+Two different moments, two behaviours:
+
+| | Command | What you see |
+|---|---|---|
+| The watcher, at window reset | `resume --run` | nothing — a headless agent works, output lands in `resume.log` |
+| You, clicking or typing | `resume --run --terminal` | a terminal window opens with an interactive `claude --continue` |
+
+The headless form is right when nobody is at the keyboard, which is exactly when
+the watcher fires. It is also why a click that "did nothing" usually did
+everything — check `resume.log` before believing otherwise.
+
+`--terminal` drops `-p` and `AUTO_RESUME_ARGS`: you are there, so the session
+asks you rather than pre-granting itself permissions. The menu bar item uses it.
+
+On macOS the window is opened with AppleScript, so the first use raises a
+"wants to control Terminal" prompt. Refuse it and claude-reserve falls back to
+opening the folder and telling you the command to type. Point
+`RESUME_TERMINAL_APP` at another app, or override the whole thing:
+
+```bash
+RESUME_TERMINAL_CMD="tmux new-window"     # receives the command as last argument
+```
+
+If no terminal can be opened at all, the session **stays in the queue** — an
+unopened resume that silently disappears is how work gets lost.
+
+## Watching a resume, and stopping one
+
+```bash
+ps -eo pid,etime,command | grep "[c]laude"
+tail -f ~/.claude/claude-reserve/resume.log
+pkill -f "claude --continue -p"
+```
+
+The `-p` is the tell: headless resumes carry it, sessions you opened in a window
+never do — so that `pkill` cannot touch your own work.
 
 ## The manual alternative
 
@@ -57,9 +96,10 @@ RESUME_NOTIFY=true
 You get notified when the window resets and work is waiting, then:
 
 ```bash
-claude-reserve pending        # what is queued
-claude-reserve resume         # print the commands, run nothing
-claude-reserve resume --run   # actually resume
+claude-reserve pending                  # what is queued
+claude-reserve resume                   # print the commands, run nothing
+claude-reserve resume --run             # resume headlessly
+claude-reserve resume --run --terminal  # resume in a terminal window
 ```
 
 `resume` without `--run` prints commands so you can read them first. If the
@@ -76,6 +116,8 @@ guard is still blocking it refuses and explains why.
 | `AUTO_RESUME_PROMPT` | `Continue where you left off.` | Prompt sent on resume |
 | `AUTO_RESUME_ARGS` | `""` | Extra flags, e.g. `--permission-mode acceptEdits` |
 | `CLAUDE_BIN` | `claude` | Path to the Claude Code binary |
+| `RESUME_TERMINAL_APP` | `Terminal` | macOS app used by `--terminal` |
+| `RESUME_TERMINAL_CMD` | `""` | Overrides `--terminal` entirely; gets the command as its last argument |
 
 `AUTO_RESUME_MAX` stops a day of blocked sessions becoming a dozen agents
 starting at once.

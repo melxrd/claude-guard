@@ -81,6 +81,11 @@ claude-reserve ntfy-test
 You get a push when a turn exceeds `NOTIFY_MIN_TURN_SEC`, when the guard blocks,
 and at each of `ALERT_LEVELS`.
 
+**A fresh install ships an empty topic**, and an empty topic disables ntfy
+silently — nothing is sent, nothing errors. Reinstalling does not carry your old
+topic across, so after any install check `grep NTFY_TOPIC reserve.conf` before
+concluding that push is broken.
+
 **The topic is the only secret** — anyone who knows it can read your
 notifications. To rotate it, change `reserve.conf` and update the app **in the
 same sitting**: a mismatch is silent, the sender keeps reporting success.
